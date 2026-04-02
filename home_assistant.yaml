@@ -16,8 +16,8 @@ rest_command:
     url: "http://192.168.1.92/stop"
     method: GET
 
-    eneby_volume:
-      url: "http://192.168.1.92/volume"
+  eneby_volume:
+    url: "http://192.168.1.92/volume"
     method: GET
     params:
       level: "{{ level }}"

@@ -1,5 +1,8 @@
 # PlatformIO build artefacts
 .pio/
 
+# VS Code settings
+.vscode/
+
 # Real credentials — never commit this, use include/config.h.example as template
 include/config.h

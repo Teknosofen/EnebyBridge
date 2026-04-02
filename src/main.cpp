@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <esp_wifi.h>
 
 // arduino-audio-tools (v1.x path layout: src/AudioTools/...)
 #include "AudioTools.h"
@@ -30,6 +31,11 @@ WebServer server(HTTP_PORT);
 bool      isPlaying    = false;
 String    currentUrl   = "";
 int       currentVolume = 70;  // 0–100
+
+// ─── WiFi reconnection ──────────────────────────────────────────────────────
+unsigned long lastWifiCheck = 0;
+const unsigned long WIFI_CHECK_MS = 10000;  // poll every 10 s
+int wifiFailCount = 0;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 void stopPlayback() {
@@ -126,22 +132,8 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n[boot] Eneby BT bridge starting...");
 
-    // ── WiFi ──────────────────────────────────────────────────────────────────
-    // Connect WiFi first so it gets the radio without BT competition.
-    // Set MIN_MODEM sleep *before* BT starts so coex initialises correctly
-    // (WIFI_PS_NONE aborts when BT is active; setting MIN_MODEM early avoids this).
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("[wifi] Connecting");
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    Serial.printf("\n[wifi] Connected. IP: %s\n",
-                  WiFi.localIP().toString().c_str());
-
-    // ── Bluetooth A2DP ────────────────────────────────────────────────────────
-    // Start BT after WiFi is stable and already in MIN_MODEM sleep mode.
+    // ── Bluetooth A2DP ───────────────────────────────────────────────────
+    // BT starts first — this is the sequence that connected both stacks.
     Serial.printf("[bt] Starting A2DP to '%s'...\n", BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -149,7 +141,43 @@ void setup() {
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
 
-    // ── HTTP API ──────────────────────────────────────────────────────────────
+    // Wait for BT to connect
+    Serial.print("[bt] Waiting for connection");
+    unsigned long btStart = millis();
+    while (!a2dpStream.isConnected() && millis() - btStart < 30000) {
+        delay(500);
+        Serial.print(".");
+    }
+    if (a2dpStream.isConnected()) {
+        Serial.println("\n[bt] Connected!");
+    } else {
+        Serial.println("\n[bt] Not connected yet — will keep trying");
+    }
+
+    // Let BT link stabilize before WiFi touches the radio
+    Serial.println("[bt] Stabilizing link (3 s)...");
+    delay(3000);
+
+    // ── WiFi ─────────────────────────────────────────────────────────────
+    // Throttle WiFi radio usage IMMEDIATELY — before the handshake starts.
+    // MIN_MODEM makes WiFi only wake the radio for beacons, leaving most
+    // slots free for BT. The handshake takes longer but won't starve BT.
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    Serial.print("[wifi] Connecting (MIN_MODEM)");
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 60000) {
+        delay(1000);
+        Serial.print(".");
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[wifi] Connected. IP: %s\n",
+                      WiFi.localIP().toString().c_str());
+    } else {
+        Serial.println("\n[wifi] Not connected yet — will retry in loop");
+    }
+
+    // ── HTTP API ──────────────────────────────────────────────────────────
     server.on("/play",   HTTP_GET, handlePlay);
     server.on("/stop",   HTTP_GET, handleStop);
     server.on("/volume", HTTP_GET, handleVolume);
@@ -162,6 +190,31 @@ void setup() {
 
 // ─── Loop ────────────────────────────────────────────────────────────────────
 void loop() {
+    // ── WiFi health check ─────────────────────────────────────────────────
+    unsigned long now = millis();
+    if (now - lastWifiCheck >= WIFI_CHECK_MS) {
+        lastWifiCheck = now;
+        if (WiFi.status() != WL_CONNECTED) {
+            wifiFailCount++;
+            Serial.printf("[wifi] Not connected (check #%d)\n", wifiFailCount);
+            // Auto-reconnect handles most cases; nudge it every 5th try
+            if (wifiFailCount % 5 == 0) {
+                Serial.println("[wifi] Nudging reconnect");
+                WiFi.disconnect(false);  // keep radio on!
+                delay(500);
+                WiFi.begin(WIFI_SSID, WIFI_PASS);
+            }
+            if (isPlaying) {
+                Serial.println("[wifi] Stopping playback — no network");
+                stopPlayback();
+            }
+        } else if (wifiFailCount > 0) {
+            Serial.printf("[wifi] Reconnected after %d checks. IP: %s\n",
+                          wifiFailCount, WiFi.localIP().toString().c_str());
+            wifiFailCount = 0;
+        }
+    }
+
     server.handleClient();
 
     if (isPlaying) {
@@ -176,6 +229,6 @@ void loop() {
         }
     }
 
-    // Small yield to keep WiFi stack healthy
+    // Small yield to keep WiFi + BT coex stacks healthy
     delay(1);
 }
