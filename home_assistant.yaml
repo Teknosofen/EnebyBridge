@@ -1,0 +1,95 @@
+# ─── Home Assistant integration for Eneby BT bridge ─────────────────────────
+#
+# Replace 192.168.1.XXX with your ESP32's actual IP address.
+# Add these to your configuration.yaml (or split into separate files).
+#
+
+# ─── REST commands (send play/stop/volume to the ESP32) ──────────────────────
+rest_command:
+  eneby_play:
+    url: "http://192.168.1.92/play"
+    method: GET
+    params:
+      url: "{{ url }}"
+
+  eneby_stop:
+    url: "http://192.168.1.92/stop"
+    method: GET
+
+    eneby_volume:
+      url: "http://192.168.1.92/volume"
+    method: GET
+    params:
+      level: "{{ level }}"
+
+# ─── Template media_player entity ────────────────────────────────────────────
+# This gives you a proper media_player card in HA dashboards.
+#
+media_player:
+  - platform: template
+    media_players:
+      eneby_speaker:
+        unique_id: eneby_bt_bridge
+        friendly_name: "Eneby Speaker"
+        value_template: >
+          {% set status = states('sensor.eneby_status') %}
+          {% if status == 'playing' %}playing{% else %}idle{% endif %}
+        turn_on:
+          service: rest_command.eneby_play
+          data:
+            url: "http://your-default-radio-stream.com/stream.mp3"
+        turn_off:
+          service: rest_command.eneby_stop
+        set_volume:
+          service: rest_command.eneby_volume
+          data:
+            level: "{{ (volume_level * 100) | int }}"
+        volume_template: "{{ state_attr('sensor.eneby_status', 'volume') | default(70) | int / 100 }}"
+
+# ─── REST sensor (polls /status for state) ───────────────────────────────────
+sensor:
+  - platform: rest
+    name: eneby_status
+    resource: "http://192.168.1.92/status"
+    scan_interval: 10
+    value_template: "{{ 'playing' if value_json.playing else 'idle' }}"
+    json_attributes:
+      - volume
+      - url
+      - heap
+
+# ─── Example automations ─────────────────────────────────────────────────────
+
+# Play a radio stream
+automation:
+  - alias: "Eneby - Play Radio"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.play_radio
+        to: "on"
+    action:
+      - service: rest_command.eneby_play
+        data:
+          url: "http://ice1.somafm.com/groovesalad-128-mp3"  # example stream
+
+  # Stop when leaving home
+  - alias: "Eneby - Stop on Away"
+    trigger:
+      - platform: state
+        entity_id: person.your_name
+        to: "not_home"
+    action:
+      - service: rest_command.eneby_stop
+
+# ─── Script: play any URL from HA UI ─────────────────────────────────────────
+script:
+  play_on_eneby:
+    alias: "Play URL on Eneby"
+    fields:
+      url:
+        description: "Audio stream URL (MP3)"
+        example: "http://stream.example.com/radio.mp3"
+    sequence:
+      - service: rest_command.eneby_play
+        data:
+          url: "{{ url }}"

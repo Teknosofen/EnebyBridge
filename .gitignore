@@ -1,0 +1,5 @@
+# PlatformIO build artefacts
+.pio/
+
+# Real credentials — never commit this, use include/config.h.example as template
+include/config.h
