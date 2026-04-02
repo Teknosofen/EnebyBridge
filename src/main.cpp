@@ -207,7 +207,30 @@ void setup() {
 
     Serial.printf("%lu [boot] Eneby BT bridge starting...\n", millis());
 
+    // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
+    mp3dec_init(&mp3d);
+
+    // ── WiFi FIRST ───────────────────────────────────────────────────────
+    // WiFi must associate before BT starts.  An active A2DP link with SBC
+    // codec dominates the shared 2.4 GHz radio, preventing WiFi association.
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.print("[wifi] Connecting");
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
+        delay(500);
+        Serial.print(".");
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n%lu [wifi] Connected. IP: %s  heap: %d\n",
+                      millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
+    } else {
+        Serial.printf("\n%lu [wifi] Not connected yet — will retry in loop\n", millis());
+    }
+
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
+    // Start BT after WiFi.  auto_reconnect handles pairing in the
+    // background; the coexistence scheduler shares radio time.
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -224,33 +247,11 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected!\n", millis());
-        // Let SBC codec init finish on the BT task thread
-        Serial.printf("%lu [bt] Waiting for SBC codec init...\n", millis());
-        delay(3000);
-        Serial.printf("%lu [bt] Stable (heap: %d)\n", millis(), ESP.getFreeHeap());
     } else {
-        Serial.printf("\n%lu [bt] Not connected yet — will keep trying\n", millis());
+        Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
-    mp3dec_init(&mp3d);
-    Serial.printf("%lu [audio] Decoder ready (heap: %d)\n", millis(), ESP.getFreeHeap());
-
-    // ── WiFi ─────────────────────────────────────────────────────────────
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("[wifi] Connecting");
-    unsigned long wifiStart = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 30000) {
-        delay(500);
-        Serial.print(".");
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n%lu [wifi] Connected. IP: %s  heap: %d\n",
-                      millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
-    } else {
-        Serial.printf("\n%lu [wifi] Not connected yet — will retry in loop\n", millis());
-    }
+    Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
     // ── HTTP API ──────────────────────────────────────────────────────────
     server.on("/play",   HTTP_GET, handlePlay);
