@@ -4,32 +4,38 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 
-// arduino-audio-tools (v1.x path layout: src/AudioTools/...)
+// A2DPStream from audio-tools for Bluetooth A2DP output
 #include "AudioTools.h"
-#include "AudioTools/AudioCodecs/CodecMP3Mini.h"
 #include "AudioTools/AudioLibs/A2DPStream.h"
+
+// minimp3 directly — all state lives in BSS, zero heap allocation
+#include "minimp3.h"
 
 #include "config.h"
 
 // ─── Audio pipeline ──────────────────────────────────────────────────────────
 //
-//  WiFiClient → MP3DecoderMini → A2DPStream (BT TX)
+//  WiFiClient → minimp3 → A2DPStream (BT TX)
 //
-//  WiFiClient pulls MP3 via raw HTTP/1.0 GET.
-//  MP3DecoderMini decodes MP3 → PCM and writes directly to A2DPStream.
-//  No EncodedAudioStream wrapper — avoids its 4.6 KB heap buffer.
+//  All decoder memory is statically allocated (BSS) so it never competes
+//  with the BT/WiFi heap.  mp3dec_t lives here as a global, the input
+//  accumulation buffer and PCM output are static arrays.
 //
 
 WiFiClient      streamClient;                       // raw TCP to stream server
 A2DPStream      a2dpStream;                         // BT A2DP source
-MP3DecoderMini  mp3Decoder;                         // MP3 → PCM (minimp3, low RAM)
-static uint8_t  readBuf[512];                       // static read buffer (in .bss, not heap)
+
+// ─── Static decoder state (BSS, not heap) ────────────────────────────────────
+static mp3dec_t           mp3d;                      // minimp3 context
+static mp3dec_frame_info_t mp3info;                  // last frame info
+static mp3d_sample_t      pcmBuf[MINIMP3_MAX_SAMPLES_PER_FRAME]; // PCM out
+static uint8_t            mp3InBuf[5 * 1024];        // input accumulation
+static int                mp3InLen = 0;              // bytes in mp3InBuf
 
 WebServer server(HTTP_PORT);
 
 // ─── State ───────────────────────────────────────────────────────────────────
 bool      isPlaying    = false;
-bool      decoderReady = false;  // true after first decodedStream.begin()
 String    currentUrl   = "";
 int       currentVolume = 70;  // 0–100
 
@@ -60,6 +66,7 @@ bool parseUrl(const String& url, String& host, uint16_t& port, String& path) {
 void stopPlayback() {
     if (isPlaying) {
         streamClient.stop();
+        mp3InLen = 0;  // flush decoder input
         isPlaying  = false;
         currentUrl = "";
         Serial.printf("%lu [audio] Stopped\n", millis());
@@ -127,6 +134,7 @@ bool startPlayback(const String& url) {
         }
 
         // Body starts here — raw MP3 data flows into the decoder.
+        mp3InLen = 0;  // flush any stale input
         isPlaying  = true;
         currentUrl = url;
         Serial.printf("%lu [audio] Streaming! (heap: %d)\n", millis(), ESP.getFreeHeap());
@@ -200,9 +208,6 @@ void setup() {
     Serial.printf("%lu [boot] Eneby BT bridge starting...\n", millis());
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
-    // Start BT, but don't block waiting for connection.  auto_reconnect
-    // handles pairing in the background.  Blocking here eats 10-25 s of
-    // radio time, starving WiFi when it starts.
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -210,17 +215,28 @@ void setup() {
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
 
-    // ── MP3 decoder ──────────────────────────────────────────────────────
-    // Allocate the 4.6 KB decode buffer NOW, while heap is ~60–160 KB and
-    // unfragmented.  After WiFi connects, max contiguous block is ~2.5 KB.
-    mp3Decoder.setOutput(a2dpStream);
-    mp3Decoder.begin();
-    decoderReady = true;
-    Serial.printf("%lu [audio] Decoder allocated (heap: %d)\n", millis(), ESP.getFreeHeap());
+    // Wait for BT to connect — max 15 s
+    Serial.print("[bt] Waiting for connection");
+    unsigned long btStart = millis();
+    while (!a2dpStream.isConnected() && millis() - btStart < 15000) {
+        delay(500);
+        Serial.print(".");
+    }
+    if (a2dpStream.isConnected()) {
+        Serial.printf("\n%lu [bt] Connected!\n", millis());
+        // Let SBC codec init finish on the BT task thread
+        Serial.printf("%lu [bt] Waiting for SBC codec init...\n", millis());
+        delay(3000);
+        Serial.printf("%lu [bt] Stable (heap: %d)\n", millis(), ESP.getFreeHeap());
+    } else {
+        Serial.printf("\n%lu [bt] Not connected yet — will keep trying\n", millis());
+    }
+
+    // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
+    mp3dec_init(&mp3d);
+    Serial.printf("%lu [audio] Decoder ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
     // ── WiFi ─────────────────────────────────────────────────────────────
-    // Start WiFi immediately — don't wait for BT to settle.  Both stacks
-    // connect in parallel; BT auto_reconnect recovers from any radio sharing.
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("[wifi] Connecting");
@@ -304,14 +320,35 @@ void loop() {
     }
 
     if (isPlaying) {
-        int avail = streamClient.available();
-        if (avail > 0) {
-            int toRead = min(avail, (int)sizeof(readBuf));
-            int n = streamClient.read(readBuf, toRead);
-            if (n > 0) {
-                mp3Decoder.write(readBuf, n);
+        // Read from TCP into accumulation buffer
+        int space = sizeof(mp3InBuf) - mp3InLen;
+        if (space > 0) {
+            int avail = streamClient.available();
+            if (avail > 0) {
+                int toRead = min(avail, space);
+                int n = streamClient.read(mp3InBuf + mp3InLen, toRead);
+                if (n > 0) mp3InLen += n;
             }
         }
+
+        // Decode as many frames as possible from the accumulated buffer
+        while (mp3InLen > 0) {
+            int samples = mp3dec_decode_frame(&mp3d, mp3InBuf, mp3InLen,
+                                             pcmBuf, &mp3info);
+            if (mp3info.frame_bytes > 0) {
+                int remaining = mp3InLen - mp3info.frame_bytes;
+                if (remaining > 0)
+                    memmove(mp3InBuf, mp3InBuf + mp3info.frame_bytes, remaining);
+                mp3InLen = remaining;
+            } else {
+                break;  // not enough data for a frame
+            }
+            if (samples > 0) {
+                int pcmBytes = samples * mp3info.channels * sizeof(mp3d_sample_t);
+                a2dpStream.write((uint8_t*)pcmBuf, pcmBytes);
+            }
+        }
+
         static unsigned long lastPipelineLog = 0;
         if (millis() - lastPipelineLog >= 5000) {
             Serial.printf("%lu [audio] heap=%d bt=%s\n",
