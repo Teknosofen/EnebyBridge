@@ -235,9 +235,6 @@ void setup() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
                       millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
-        // Set WiFi power save to NONE now while heap is high (~121 KB).
-        // This avoids lazy alloc of pm_set_sleep_type later at low heap.
-        esp_wifi_set_ps(WIFI_PS_NONE);
     } else {
         Serial.printf("%lu [wifi] Not connected yet — will retry in loop\n", millis());
     }
