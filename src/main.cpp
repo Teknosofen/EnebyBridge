@@ -230,12 +230,15 @@ void setup() {
     }
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
-    // WiFi dominates the radio and prevents BT pairing.  Temporarily
-    // enable power-save so WiFi only wakes for beacons (~100 ms), giving
-    // BT 80-90 % of radio time for the multi-step pairing handshake.
-    if (WiFi.status() == WL_CONNECTED) {
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        Serial.printf("%lu [bt] WiFi power-save ON for BT pairing\n", millis());
+    // Even with MIN_MODEM power-save, WiFi beacon wake-ups disrupt the
+    // multi-step BT pairing handshake.  Temporarily disconnect WiFi to
+    // give BT 100% radio time, then reconnect.  disconnect(false) keeps
+    // the radio powered on and WiFi credentials cached.
+    bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
+    if (wifiWasConnected) {
+        WiFi.disconnect(false);  // keep radio on, credentials cached
+        delay(100);
+        Serial.printf("%lu [bt] WiFi paused for BT pairing\n", millis());
     }
 
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
@@ -258,9 +261,22 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // Restore full WiFi performance for HTTP/streaming
+    // Reconnect WiFi now that BT pairing is done
+    if (wifiWasConnected) {
+        Serial.printf("%lu [wifi] Reconnecting...\n", millis());
+        WiFi.begin(WIFI_SSID, WIFI_PASS);
+        unsigned long wifiRestart = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - wifiRestart < 15000) {
+            delay(500);
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.printf("%lu [wifi] Reconnected. IP: %s  heap: %d\n",
+                          millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
+        } else {
+            Serial.printf("%lu [wifi] Not reconnected yet — loop will retry\n", millis());
+        }
+    }
     esp_wifi_set_ps(WIFI_PS_NONE);
-    Serial.printf("%lu [bt] WiFi power-save OFF\n", millis());
 
     Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
