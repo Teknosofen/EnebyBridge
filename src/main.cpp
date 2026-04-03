@@ -211,9 +211,31 @@ void setup() {
     // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
     mp3dec_init(&mp3d);
 
-    // ── WiFi FIRST ───────────────────────────────────────────────────────
-    // WiFi must associate before BT starts.  An active A2DP link with SBC
-    // codec dominates the shared 2.4 GHz radio, preventing WiFi association.
+    // ── Bluetooth A2DP FIRST ─────────────────────────────────────────────
+    // BT pairs reliably when it starts on a clean radio (no WiFi yet).
+    // All decoder memory is in BSS, so HTTP access after WiFi connects
+    // won't cause heap exhaustion anymore.
+    Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
+    auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
+    a2dpCfg.name           = BT_DEVICE_NAME;
+    a2dpCfg.auto_reconnect = true;
+    a2dpStream.begin(a2dpCfg);
+    a2dpStream.setVolume(currentVolume / 100.0f);
+
+    // Wait for BT to connect — max 30 s
+    Serial.print("[bt] Waiting for connection");
+    unsigned long btStart = millis();
+    while (!a2dpStream.isConnected() && millis() - btStart < 30000) {
+        delay(500);
+        Serial.print(".");
+    }
+    if (a2dpStream.isConnected()) {
+        Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
+    } else {
+        Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
+    }
+
+    // ── WiFi ─────────────────────────────────────────────────────────────
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("[wifi] Connecting");
@@ -227,54 +249,6 @@ void setup() {
                       millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
     } else {
         Serial.printf("\n%lu [wifi] Not connected yet — will retry in loop\n", millis());
-    }
-
-    // ── Bluetooth A2DP ───────────────────────────────────────────────────
-    // Even with MIN_MODEM power-save, WiFi beacon wake-ups disrupt the
-    // multi-step BT pairing handshake.  Temporarily disconnect WiFi to
-    // give BT 100% radio time, then reconnect.  disconnect(false) keeps
-    // the radio powered on and WiFi credentials cached.
-    bool wifiWasConnected = (WiFi.status() == WL_CONNECTED);
-    if (wifiWasConnected) {
-        WiFi.disconnect(false);  // keep radio on, credentials cached
-        delay(100);
-        Serial.printf("%lu [bt] WiFi paused for BT pairing\n", millis());
-    }
-
-    Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
-    auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
-    a2dpCfg.name           = BT_DEVICE_NAME;
-    a2dpCfg.auto_reconnect = true;
-    a2dpStream.begin(a2dpCfg);
-    a2dpStream.setVolume(currentVolume / 100.0f);
-
-    // Wait for BT to connect — max 20 s
-    Serial.print("[bt] Waiting for connection");
-    unsigned long btStart = millis();
-    while (!a2dpStream.isConnected() && millis() - btStart < 20000) {
-        delay(500);
-        Serial.print(".");
-    }
-    if (a2dpStream.isConnected()) {
-        Serial.printf("\n%lu [bt] Connected!\n", millis());
-    } else {
-        Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
-    }
-
-    // Reconnect WiFi now that BT pairing is done
-    if (wifiWasConnected) {
-        Serial.printf("%lu [wifi] Reconnecting...\n", millis());
-        WiFi.begin(WIFI_SSID, WIFI_PASS);
-        unsigned long wifiRestart = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - wifiRestart < 15000) {
-            delay(500);
-        }
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("%lu [wifi] Reconnected. IP: %s  heap: %d\n",
-                          millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
-        } else {
-            Serial.printf("%lu [wifi] Not reconnected yet — loop will retry\n", millis());
-        }
     }
     esp_wifi_set_ps(WIFI_PS_NONE);
 
