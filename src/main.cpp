@@ -244,8 +244,11 @@ void setup() {
     // ── 3. Bluetooth A2DP ────────────────────────────────────────────
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
-    a2dpCfg.name           = BT_DEVICE_NAME;
-    a2dpCfg.auto_reconnect = true;
+    a2dpCfg.name              = BT_DEVICE_NAME;
+    a2dpCfg.auto_reconnect    = true;
+    a2dpCfg.silence_on_nodata = true;   // BT callback auto-sends silence
+                                         // when ring buffer is empty —
+                                         // keeps speaker from disconnecting
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
 
@@ -258,12 +261,10 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
-        // Prime the SBC encoder now while heap is ~19 KB.  The first
-        // a2dpStream.write() triggers SBC init (~5 KB alloc).  Doing it
-        // here avoids a heap cliff in the main loop.
-        static const uint8_t prime[32] = {0};
-        a2dpStream.write(prime, sizeof(prime));
-        Serial.printf("%lu [bt] SBC primed (heap: %d)\n", millis(), ESP.getFreeHeap());
+        // Wait for SBC encoder to initialize — triggered by the first
+        // callback from the BT stack (silence_on_nodata sends zeros).
+        delay(3000);
+        Serial.printf("%lu [bt] Settled (heap: %d)\n", millis(), ESP.getFreeHeap());
     } else {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
