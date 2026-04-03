@@ -245,14 +245,7 @@ void setup() {
     // ── 2. Coex: prioritize BT for pairing ──────────────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
 
-    // ── 3. Release BLE controller memory ─ we only use BT Classic ────
-    // The default BT config reserves ~30 KB for BLE. We don't use BLE,
-    // so releasing it before the A2DP library calls esp_bt_controller_init()
-    // gives us critical extra heap.
-    esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-    Serial.printf("%lu [bt] BLE memory released, heap: %d\n", millis(), ESP.getFreeHeap());
-
-    // ── 4. Bluetooth A2DP ────────────────────────────────────────
+    // ── 3. Bluetooth A2DP ────────────────────────────────────────────
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name              = BT_DEVICE_NAME;
@@ -279,7 +272,7 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── 5. Switch to balanced coex for normal operation ──────────────
+    // ── 4. Switch to balanced coex for normal operation ──────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     Serial.printf("%lu [coex] -> PREFER_BALANCE\n", millis());
 
