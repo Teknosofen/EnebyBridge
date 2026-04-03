@@ -235,6 +235,11 @@ void setup() {
     }
 
     // ── WiFi ─────────────────────────────────────────────────────────────
+    // Disable WiFi power-save BEFORE begin() so the stack initializes
+    // with PS_NONE.  Calling esp_wifi_set_ps after connection fails at
+    // low heap.  setSleep(false) = WIFI_PS_NONE = no radio power-saving,
+    // so BT gets fair radio time via the coexistence scheduler.
+    WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("[wifi] Connecting");
