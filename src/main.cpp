@@ -274,14 +274,6 @@ void setup() {
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     Serial.printf("%lu [coex] -> PREFER_BALANCE\n", millis());
 
-    // ── 5. WiFi power save OFF ─ must be AFTER coex + BT init ───────
-    // Setting PS_NONE before BT init crashes coex_core_enable.
-    // Setting it now (both stacks running) is safe and prevents
-    // WiFi background timer allocations that eat ~1-2 KB heap.
-    if (WiFi.status() == WL_CONNECTED) {
-        esp_wifi_set_ps(WIFI_PS_NONE);
-        Serial.printf("%lu [wifi] PS_NONE set (heap: %d)\n", millis(), ESP.getFreeHeap());
-    }
 
     // Check if WiFi survived BT startup
     Serial.printf("%lu [status] bt=%s wifi=%s heap=%d\n",
