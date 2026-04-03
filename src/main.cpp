@@ -3,6 +3,8 @@
 #include <WebServer.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_coexist.h>
+#include <esp_wifi.h>
 
 // A2DPStream from audio-tools for Bluetooth A2DP output
 #include "AudioTools.h"
@@ -210,10 +212,22 @@ void setup() {
     // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
     mp3dec_init(&mp3d);
 
-    // ── Bluetooth A2DP FIRST ─────────────────────────────────────────────
-    // BT pairs reliably when it starts on a clean radio (no WiFi yet).
-    // All decoder memory is in BSS, so HTTP access after WiFi connects
-    // won't cause heap exhaustion anymore.
+    // ── WiFi stack early init ──────────────────────────────────────────
+    // Initialize WiFi STA mode NOW while heap is ~170 KB.  This allocates
+    // the WiFi stack's internal buffers at high heap.  Then set PS_NONE
+    // immediately — pm_set_sleep_type needs heap and crashes if called
+    // after BT has consumed it.  WiFi.begin() later just connects.
+    WiFi.mode(WIFI_STA);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.setAutoReconnect(true);
+    Serial.printf("%lu [wifi] Stack pre-init (PS_NONE), heap: %d\n", millis(), ESP.getFreeHeap());
+
+    // ── Coexistence: prioritize BT ─────────────────────────────────────────
+    // Tell the radio scheduler to give BT priority.
+    esp_coex_preference_set(ESP_COEX_PREFER_BT);
+
+    // ── Bluetooth A2DP ───────────────────────────────────────────────────
+    // BT pairs reliably when it starts before WiFi.begin() (no AP traffic).
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -234,13 +248,8 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── WiFi ─────────────────────────────────────────────────────────────
-    // Disable WiFi power-save BEFORE begin() so the stack initializes
-    // with PS_NONE.  Calling esp_wifi_set_ps after connection fails at
-    // low heap.  setSleep(false) = WIFI_PS_NONE = no radio power-saving,
-    // so BT gets fair radio time via the coexistence scheduler.
-    WiFi.setSleep(false);
-    WiFi.setAutoReconnect(true);
+    // ── WiFi connect ───────────────────────────────────────────────────
+    // Stack + PS_NONE already configured above.  Just connect to the AP.
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("[wifi] Connecting");
     unsigned long wifiStart = millis();
