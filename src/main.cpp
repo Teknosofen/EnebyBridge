@@ -260,6 +260,14 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
+        // Let AVDTP signaling (codec negotiation, stream open) finish
+        // before touching WiFi.  isConnected() fires on A2DP profile
+        // connect, but the audio stream may still be setting up.
+        Serial.printf("%lu [bt] Waiting 3 s for AVDTP stream setup...\n", millis());
+        delay(3000);
+        Serial.printf("%lu [bt] Settled (heap: %d, bt: %s)\n",
+                      millis(), ESP.getFreeHeap(),
+                      a2dpStream.isConnected() ? "still up" : "DROPPED");
     } else {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
@@ -395,6 +403,29 @@ void loop() {
         if (!streamClient.connected() && !streamClient.available()) {
             Serial.printf("%lu [audio] Stream ended\n", millis());
             stopPlayback();
+        }
+    }
+
+    // ── BT keepalive: feed silence when idle ─────────────────────────────
+    // When not streaming, the A2DP source has no data to send.  Without
+    // outgoing audio the BT stack stops requesting radio time-slots from
+    // the coex scheduler, so WiFi takes over and BT supervision times out.
+    // Writing a small silence buffer keeps the A2DP source active and
+    // forces the coex scheduler to keep granting BT radio time.
+    if (!isPlaying && a2dpStream.isConnected()) {
+        static const uint8_t silence[128] = {0};
+        a2dpStream.write(silence, sizeof(silence));
+    }
+
+    // ── BT status (idle) ─────────────────────────────────────────────────
+    if (!isPlaying) {
+        static unsigned long lastIdleLog = 0;
+        if (millis() - lastIdleLog >= 5000) {
+            Serial.printf("%lu [idle] heap=%d bt=%s wifi=%s\n",
+                          millis(), ESP.getFreeHeap(),
+                          a2dpStream.isConnected() ? "yes" : "NO",
+                          WiFi.status() == WL_CONNECTED ? "yes" : "NO");
+            lastIdleLog = millis();
         }
     }
 
