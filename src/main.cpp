@@ -49,6 +49,8 @@ String    pendingUrl   = "";
 unsigned long lastWifiCheck = 0;
 const unsigned long WIFI_CHECK_MS = 10000;  // poll every 10 s
 int wifiFailCount = 0;
+int32_t  cachedChannel = 0;                 // from pre-scan, reused in reconnect
+uint8_t  cachedBSSID[6] = {0};
 
 // ─── URL parser ──────────────────────────────────────────────────────────────
 bool parseUrl(const String& url, String& host, uint16_t& port, String& path) {
@@ -225,23 +227,24 @@ void setup() {
     WiFi.setAutoReconnect(true);
     Serial.printf("%lu [wifi] Stack init, heap: %d\n", millis(), ESP.getFreeHeap());
 
-    int32_t  apChannel = 0;
-    uint8_t  apBSSID[6] = {0};
     int n = WiFi.scanNetworks(false, false, false, 300);  // active scan, 300ms/ch
     for (int i = 0; i < n; i++) {
         if (String(WIFI_SSID) == WiFi.SSID(i)) {
-            apChannel = WiFi.channel(i);
-            memcpy(apBSSID, WiFi.BSSID(i), 6);
+            cachedChannel = WiFi.channel(i);
+            memcpy(cachedBSSID, WiFi.BSSID(i), 6);
             Serial.printf("%lu [wifi] Found '%s' on ch %d (RSSI %d)\n",
-                          millis(), WIFI_SSID, apChannel, WiFi.RSSI(i));
+                          millis(), WIFI_SSID, cachedChannel, WiFi.RSSI(i));
             break;
         }
     }
     WiFi.scanDelete();  // free scan results
     Serial.printf("%lu [wifi] Pre-scan done, heap: %d\n", millis(), ESP.getFreeHeap());
 
-    // ── Coexistence: prioritize BT ─────────────────────────────────────
-    esp_coex_preference_set(ESP_COEX_PREFER_BT);
+    // ── Coexistence: balanced — silence frames keep BT alive ──────────
+    // PREFER_BT starves WiFi so badly it can't complete WPA auth.
+    // PREFER_BALANCE lets both stacks share radio time fairly;
+    // the continuous silence writes ensure BT keeps requesting slots.
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
@@ -275,9 +278,9 @@ void setup() {
     // ── WiFi connect (scan-free) ─────────────────────────────────────────
     // Use pre-scanned channel + BSSID to skip the 2-4 s channel scan that
     // kills the BT link.  Direct association takes <500 ms.
-    if (apChannel > 0) {
-        WiFi.begin(WIFI_SSID, WIFI_PASS, apChannel, apBSSID);
-        Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), apChannel);
+    if (cachedChannel > 0) {
+        WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
+        Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), cachedChannel);
     } else {
         WiFi.begin(WIFI_SSID, WIFI_PASS);
         Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
@@ -321,7 +324,11 @@ void loop() {
                 Serial.printf("%lu [wifi] Nudging reconnect\n", millis());
                 WiFi.disconnect(false);  // keep radio on!
                 delay(500);
-                WiFi.begin(WIFI_SSID, WIFI_PASS);
+                if (cachedChannel > 0) {
+                    WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
+                } else {
+                    WiFi.begin(WIFI_SSID, WIFI_PASS);
+                }
             }
             if (isPlaying) {
                 Serial.printf("%lu [wifi] Stopping playback — no network\n", millis());
