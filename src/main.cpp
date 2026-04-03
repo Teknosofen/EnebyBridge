@@ -376,7 +376,11 @@ void loop() {
             }
             if (samples > 0) {
                 int pcmBytes = samples * mp3info.channels * sizeof(mp3d_sample_t);
-                a2dpStream.write((uint8_t*)pcmBuf, pcmBytes);
+                // Non-blocking write: skip if A2DP buffer is full to avoid
+                // starving server.handleClient() on the next loop iteration.
+                if (a2dpStream.availableForWrite() >= pcmBytes) {
+                    a2dpStream.write((uint8_t*)pcmBuf, pcmBytes);
+                }
             }
         }
 
