@@ -248,6 +248,7 @@ void setup() {
     a2dpCfg.name              = BT_DEVICE_NAME;
     a2dpCfg.auto_reconnect    = true;
     a2dpCfg.silence_on_nodata = true;   // BT callback auto-sends silence
+    a2dpCfg.buffer_size       = 512;    // small ring buffer (default can be up to 15K)
     a2dpCfg.buffer_size       = 512;    // minimum ring buffer (default 15 KB!)
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
@@ -272,6 +273,15 @@ void setup() {
     // ── 4. Switch to balanced coex for normal operation ──────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     Serial.printf("%lu [coex] -> PREFER_BALANCE\n", millis());
+
+    // ── 5. WiFi power save OFF ─ must be AFTER coex + BT init ───────
+    // Setting PS_NONE before BT init crashes coex_core_enable.
+    // Setting it now (both stacks running) is safe and prevents
+    // WiFi background timer allocations that eat ~1-2 KB heap.
+    if (WiFi.status() == WL_CONNECTED) {
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        Serial.printf("%lu [wifi] PS_NONE set (heap: %d)\n", millis(), ESP.getFreeHeap());
+    }
 
     // Check if WiFi survived BT startup
     Serial.printf("%lu [status] bt=%s wifi=%s heap=%d\n",
@@ -386,8 +396,9 @@ void loop() {
 
         static unsigned long lastPipelineLog = 0;
         if (millis() - lastPipelineLog >= 5000) {
-            Serial.printf("%lu [audio] heap=%d bt=%s\n",
+            Serial.printf("%lu [audio] heap=%d max_blk=%d bt=%s\n",
                           millis(), ESP.getFreeHeap(),
+                          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                           a2dpStream.isConnected() ? "yes" : "NO");
             lastPipelineLog = millis();
         }
@@ -401,8 +412,9 @@ void loop() {
     if (!isPlaying) {
         static unsigned long lastIdleLog = 0;
         if (millis() - lastIdleLog >= 5000) {
-            Serial.printf("%lu [idle] heap=%d bt=%s wifi=%s\n",
+            Serial.printf("%lu [idle] heap=%d max_blk=%d bt=%s wifi=%s\n",
                           millis(), ESP.getFreeHeap(),
+                          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                           a2dpStream.isConnected() ? "yes" : "NO",
                           WiFi.status() == WL_CONNECTED ? "yes" : "NO");
             lastIdleLog = millis();
