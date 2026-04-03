@@ -258,6 +258,12 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
+        // Prime the SBC encoder now while heap is ~19 KB.  The first
+        // a2dpStream.write() triggers SBC init (~5 KB alloc).  Doing it
+        // here avoids a heap cliff in the main loop.
+        static const uint8_t prime[32] = {0};
+        a2dpStream.write(prime, sizeof(prime));
+        Serial.printf("%lu [bt] SBC primed (heap: %d)\n", millis(), ESP.getFreeHeap());
     } else {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
@@ -383,25 +389,6 @@ void loop() {
         if (!streamClient.connected() && !streamClient.available()) {
             Serial.printf("%lu [audio] Stream ended\n", millis());
             stopPlayback();
-        }
-    }
-
-    // ── BT keepalive: feed silence when idle ─────────────────────────────
-    // When not streaming, the A2DP source has no data to send.  Without
-    // outgoing audio the BT stack stops requesting radio time-slots from
-    // the coex scheduler, so WiFi takes over and BT supervision times out.
-    // Writing a small silence buffer keeps the A2DP source active and
-    // forces the coex scheduler to keep granting BT radio time.
-    // Throttle heavily — a2dpStream.write() blocks when the A2DP ring
-    // buffer is full.  500 ms / 32 bytes is the minimum to keep the BT
-    // coex scheduler aware that A2DP is active, without starving the
-    // HTTP server or leaking heap through SBC encoder overhead.
-    if (!isPlaying && a2dpStream.isConnected()) {
-        static unsigned long lastSilence = 0;
-        if (now - lastSilence >= 500) {
-            lastSilence = now;
-            static const uint8_t silence[32] = {0};
-            a2dpStream.write(silence, sizeof(silence));
         }
     }
 
