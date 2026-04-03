@@ -205,9 +205,10 @@ void handleStatus() {
 void setup() {
     Serial.begin(115200);
 
-    // Only suppress verbose/debug/info logs — keep ERROR and WARN visible
-    // so we can see silent failures (SBC init, heap alloc, etc.)
-    esp_log_level_set("*", ESP_LOG_WARN);
+    // Suppress all ESP-IDF logging.  WiFi timer task calls wifi_log on
+    // core 0; at low heap the UART mutex alloc fails → abort().  Our own
+    // Serial.printf() calls bypass esp_log and are safe.
+    esp_log_level_set("*", ESP_LOG_NONE);
 
     Serial.printf("%lu [boot] Eneby BT bridge starting...\n", millis());
 
@@ -240,10 +241,8 @@ void setup() {
     WiFi.scanDelete();  // free scan results
     Serial.printf("%lu [wifi] Pre-scan done, heap: %d\n", millis(), ESP.getFreeHeap());
 
-    // ── Coexistence: balanced — silence frames keep BT alive ──────────
-    // PREFER_BT starves WiFi so badly it can't complete WPA auth.
-    // PREFER_BALANCE lets both stacks share radio time fairly;
-    // the continuous silence writes ensure BT keeps requesting slots.
+    // ── Coexistence ──────────────────────────────────────────────────
+    // Start with BALANCE; switch to PREFER_WIFI during WPA handshake.
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
@@ -281,6 +280,12 @@ void setup() {
     WiFi.disconnect(false);   // false = keep STA mode active
     delay(100);
 
+    // Give WiFi radio priority for the WPA handshake.  BT AVDTP is
+    // already established (20 s supervision timeout) so it survives a
+    // few seconds of lower priority.
+    esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+    Serial.printf("%lu [wifi] Coex → PREFER_WIFI for association\n", millis());
+
     if (cachedChannel > 0) {
         WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
         Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), cachedChannel);
@@ -292,11 +297,16 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
         delay(200);
     }
+
+    // Return to balanced coex now that association is done (or timed out).
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    Serial.printf("%lu [wifi] Coex → PREFER_BALANCE\n", millis());
+
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n%lu [wifi] Connected. IP: %s  heap: %d\n",
+        Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
                       millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
     } else {
-        Serial.printf("\n%lu [wifi] Not connected yet — will retry in loop\n", millis());
+        Serial.printf("%lu [wifi] Not connected yet — will retry in loop\n", millis());
     }
 
     Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
@@ -324,6 +334,7 @@ void loop() {
             // Nudge reconnect every 2nd check (20 s)
             if (wifiFailCount % 2 == 0) {
                 Serial.printf("%lu [wifi] Nudging reconnect\n", millis());
+                esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
                 WiFi.disconnect(false);  // keep radio on!
                 delay(500);
                 if (cachedChannel > 0) {
@@ -340,6 +351,7 @@ void loop() {
             Serial.printf("%lu [wifi] Reconnected after %d checks. IP: %s\n",
                           millis(), wifiFailCount, WiFi.localIP().toString().c_str());
             wifiFailCount = 0;
+            esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
         }
     }
 
