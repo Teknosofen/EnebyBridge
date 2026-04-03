@@ -29,7 +29,7 @@ A2DPStream      a2dpStream;                         // BT A2DP source
 static mp3dec_t           mp3d;                      // minimp3 context
 static mp3dec_frame_info_t mp3info;                  // last frame info
 static mp3d_sample_t      pcmBuf[MINIMP3_MAX_SAMPLES_PER_FRAME]; // PCM out
-static uint8_t            mp3InBuf[5 * 1024];        // input accumulation
+static uint8_t            mp3InBuf[2048];            // input accumulation (1 MP3 frame max ~1440 B)
 static int                mp3InLen = 0;              // bytes in mp3InBuf
 
 WebServer server(HTTP_PORT);
