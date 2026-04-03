@@ -203,31 +203,47 @@ void handleStatus() {
 void setup() {
     Serial.begin(115200);
 
-    // Suppress all ESP-IDF internal logging — the WiFi stack's log writes
-    // allocate a mutex lock; if heap is tight this causes abort().
-    esp_log_level_set("*", ESP_LOG_NONE);
+    // Only suppress verbose/debug/info logs — keep ERROR and WARN visible
+    // so we can see silent failures (SBC init, heap alloc, etc.)
+    esp_log_level_set("*", ESP_LOG_WARN);
 
     Serial.printf("%lu [boot] Eneby BT bridge starting...\n", millis());
 
     // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
     mp3dec_init(&mp3d);
 
-    // ── WiFi stack early init ──────────────────────────────────────────
-    // Initialize WiFi STA mode NOW while heap is ~170 KB.  This allocates
-    // the WiFi stack's internal buffers at high heap.  Then set PS_NONE
-    // immediately — pm_set_sleep_type needs heap and crashes if called
-    // after BT has consumed it.  WiFi.begin() later just connects.
+    // ── WiFi stack + pre-scan ────────────────────────────────────────────
+    // 1. Initialize WiFi at high heap (~170 KB) and set PS_NONE now.
+    // 2. Quick-scan to discover our AP's channel + BSSID.
+    // 3. After BT connects, use WiFi.begin(ssid,pass,channel,bssid) which
+    //    SKIPS the channel scan.  This takes <500 ms instead of 2-4 s,
+    //    preventing BT supervision timeout.
     WiFi.mode(WIFI_STA);
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    // Don't set PS_NONE — it gets applied lazily at connect time, when heap
+    // is low, and pm_set_sleep_type crashes or disrupts BT.
+    // Default MIN_MODEM will be used.
     WiFi.setAutoReconnect(true);
-    Serial.printf("%lu [wifi] Stack pre-init (PS_NONE), heap: %d\n", millis(), ESP.getFreeHeap());
+    Serial.printf("%lu [wifi] Stack init, heap: %d\n", millis(), ESP.getFreeHeap());
 
-    // ── Coexistence: prioritize BT ─────────────────────────────────────────
-    // Tell the radio scheduler to give BT priority.
+    int32_t  apChannel = 0;
+    uint8_t  apBSSID[6] = {0};
+    int n = WiFi.scanNetworks(false, false, false, 300);  // active scan, 300ms/ch
+    for (int i = 0; i < n; i++) {
+        if (String(WIFI_SSID) == WiFi.SSID(i)) {
+            apChannel = WiFi.channel(i);
+            memcpy(apBSSID, WiFi.BSSID(i), 6);
+            Serial.printf("%lu [wifi] Found '%s' on ch %d (RSSI %d)\n",
+                          millis(), WIFI_SSID, apChannel, WiFi.RSSI(i));
+            break;
+        }
+    }
+    WiFi.scanDelete();  // free scan results
+    Serial.printf("%lu [wifi] Pre-scan done, heap: %d\n", millis(), ESP.getFreeHeap());
+
+    // ── Coexistence: prioritize BT ─────────────────────────────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
-    // BT pairs reliably when it starts before WiFi.begin() (no AP traffic).
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -248,10 +264,16 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── WiFi connect ───────────────────────────────────────────────────
-    // Stack + PS_NONE already configured above.  Just connect to the AP.
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("[wifi] Connecting");
+    // ── WiFi connect (scan-free) ─────────────────────────────────────────
+    // Use pre-scanned channel + BSSID to skip the 2-4 s channel scan that
+    // kills the BT link.  Direct association takes <500 ms.
+    if (apChannel > 0) {
+        WiFi.begin(WIFI_SSID, WIFI_PASS, apChannel, apBSSID);
+        Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), apChannel);
+    } else {
+        WiFi.begin(WIFI_SSID, WIFI_PASS);
+        Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
+    }
     unsigned long wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
         delay(500);
