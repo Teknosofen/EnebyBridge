@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_wifi.h>
 
 // A2DPStream from audio-tools for Bluetooth A2DP output
 #include "AudioTools.h"
@@ -229,8 +230,14 @@ void setup() {
     }
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
-    // Start BT after WiFi.  auto_reconnect handles pairing in the
-    // background; the coexistence scheduler shares radio time.
+    // WiFi dominates the radio and prevents BT pairing.  Temporarily
+    // enable power-save so WiFi only wakes for beacons (~100 ms), giving
+    // BT 80-90 % of radio time for the multi-step pairing handshake.
+    if (WiFi.status() == WL_CONNECTED) {
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        Serial.printf("%lu [bt] WiFi power-save ON for BT pairing\n", millis());
+    }
+
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -238,10 +245,10 @@ void setup() {
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
 
-    // Wait for BT to connect — max 15 s
+    // Wait for BT to connect — max 20 s
     Serial.print("[bt] Waiting for connection");
     unsigned long btStart = millis();
-    while (!a2dpStream.isConnected() && millis() - btStart < 15000) {
+    while (!a2dpStream.isConnected() && millis() - btStart < 20000) {
         delay(500);
         Serial.print(".");
     }
@@ -250,6 +257,10 @@ void setup() {
     } else {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
+
+    // Restore full WiFi performance for HTTP/streaming
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    Serial.printf("%lu [bt] WiFi power-save OFF\n", millis());
 
     Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
