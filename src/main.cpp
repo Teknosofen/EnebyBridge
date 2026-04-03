@@ -213,15 +213,35 @@ void setup() {
     // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
     mp3dec_init(&mp3d);
 
-    // ── WiFi stack init (at high heap) ─────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════
+    // Boot order: WiFi FIRST, then BT.
+    //
+    // WiFi needs a clean radio for the channel scan + WPA handshake.
+    // Once WiFi is associated, BT can pair and the coex scheduler
+    // arbitrates normally.  Silence frames in loop() keep BT alive.
+    // ════════════════════════════════════════════════════════════════════
+
+    // ── 1. WiFi connect (clean radio, high heap ~124 KB) ─────────────
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    Serial.printf("%lu [wifi] Stack init, heap: %d\n", millis(), ESP.getFreeHeap());
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.printf("%lu [wifi] Connecting... (heap: %d)\n", millis(), ESP.getFreeHeap());
 
-    // ── Coexistence ──────────────────────────────────────────────────
-    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
+        delay(200);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
+                      millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
+    } else {
+        Serial.printf("%lu [wifi] Not connected yet — will retry in loop\n", millis());
+    }
 
-    // ── Bluetooth A2DP ───────────────────────────────────────────────────
+    // ── 2. Coex: prioritize BT for pairing ──────────────────────────
+    esp_coex_preference_set(ESP_COEX_PREFER_BT);
+
+    // ── 3. Bluetooth A2DP ────────────────────────────────────────────
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name           = BT_DEVICE_NAME;
@@ -238,41 +258,20 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
-        Serial.printf("%lu [bt] Waiting 3 s for AVDTP stream setup...\n", millis());
-        delay(3000);
-        Serial.printf("%lu [bt] Settled (heap: %d, bt: %s)\n",
-                      millis(), ESP.getFreeHeap(),
-                      a2dpStream.isConnected() ? "still up" : "DROPPED");
     } else {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── WiFi connect ─────────────────────────────────────────────────────
-    // No pre-scan: scanNetworks() leaves WiFi state machine dirty after
-    // 6+ s of BT activity.  Normal WiFi.begin() with full scan takes
-    // 2-4 s — BT survives this (20 s AVDTP supervision timeout) when
-    // we give WiFi priority during the handshake.
-    esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-    Serial.printf("%lu [wifi] Coex -> PREFER_WIFI for association\n", millis());
-
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
-
-    unsigned long wifiStart = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-        delay(200);
-    }
-
-    // Return to balanced coex now that association is done (or timed out).
+    // ── 4. Switch to balanced coex for normal operation ──────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-    Serial.printf("%lu [wifi] Coex -> PREFER_BALANCE\n", millis());
+    Serial.printf("%lu [coex] -> PREFER_BALANCE\n", millis());
 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
-                      millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
-    } else {
-        Serial.printf("%lu [wifi] Not connected yet — will retry in loop\n", millis());
-    }
+    // Check if WiFi survived BT startup
+    Serial.printf("%lu [status] bt=%s wifi=%s heap=%d\n",
+                  millis(),
+                  a2dpStream.isConnected() ? "yes" : "NO",
+                  WiFi.status() == WL_CONNECTED ? "yes" : "NO",
+                  ESP.getFreeHeap());
 
     Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
@@ -299,7 +298,6 @@ void loop() {
             // Nudge reconnect every 2nd check (20 s)
             if (wifiFailCount % 2 == 0) {
                 Serial.printf("%lu [wifi] Nudging reconnect\n", millis());
-                esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
                 WiFi.disconnect(false);  // keep radio on!
                 delay(500);
                 WiFi.begin(WIFI_SSID, WIFI_PASS);
