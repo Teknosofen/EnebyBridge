@@ -289,13 +289,8 @@ void setup() {
         Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
     }
     unsigned long wifiStart = millis();
-    static const uint8_t setupSilence[128] = {0};
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-        // Feed silence to keep BT alive during WiFi association
-        if (a2dpStream.isConnected()) {
-            a2dpStream.write(setupSilence, sizeof(setupSilence));
-        }
-        delay(100);  // shorter delay — more chances to feed silence + check WiFi
+        delay(200);
     }
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\n%lu [wifi] Connected. IP: %s  heap: %d\n",
@@ -426,13 +421,15 @@ void loop() {
     // the coex scheduler, so WiFi takes over and BT supervision times out.
     // Writing a small silence buffer keeps the A2DP source active and
     // forces the coex scheduler to keep granting BT radio time.
-    // IMPORTANT: Throttle writes — a2dpStream.write() can block when the
-    // internal ring buffer is full, which starves server.handleClient().
+    // Throttle heavily — a2dpStream.write() blocks when the A2DP ring
+    // buffer is full.  500 ms / 32 bytes is the minimum to keep the BT
+    // coex scheduler aware that A2DP is active, without starving the
+    // HTTP server or leaking heap through SBC encoder overhead.
     if (!isPlaying && a2dpStream.isConnected()) {
         static unsigned long lastSilence = 0;
-        if (now - lastSilence >= 20) {            // ~50 Hz, enough for BT keepalive
+        if (now - lastSilence >= 500) {
             lastSilence = now;
-            static const uint8_t silence[128] = {0};
+            static const uint8_t silence[32] = {0};
             a2dpStream.write(silence, sizeof(silence));
         }
     }
