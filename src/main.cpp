@@ -276,8 +276,11 @@ void setup() {
     }
 
     // ── WiFi connect (scan-free) ─────────────────────────────────────────
-    // Use pre-scanned channel + BSSID to skip the 2-4 s channel scan that
-    // kills the BT link.  Direct association takes <500 ms.
+    // Reset WiFi state machine — after scanNetworks() + scanDelete() the
+    // driver can be stuck in a post-scan state.  disconnect() clears it.
+    WiFi.disconnect(false);   // false = keep STA mode active
+    delay(100);
+
     if (cachedChannel > 0) {
         WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
         Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), cachedChannel);
@@ -286,9 +289,13 @@ void setup() {
         Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
     }
     unsigned long wifiStart = millis();
+    static const uint8_t setupSilence[128] = {0};
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-        delay(500);
-        Serial.print(".");
+        // Feed silence to keep BT alive during WiFi association
+        if (a2dpStream.isConnected()) {
+            a2dpStream.write(setupSilence, sizeof(setupSilence));
+        }
+        delay(100);  // shorter delay — more chances to feed silence + check WiFi
     }
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\n%lu [wifi] Connected. IP: %s  heap: %d\n",
