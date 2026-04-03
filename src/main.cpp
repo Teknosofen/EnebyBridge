@@ -248,7 +248,6 @@ void setup() {
     a2dpCfg.name              = BT_DEVICE_NAME;
     a2dpCfg.auto_reconnect    = true;
     a2dpCfg.silence_on_nodata = true;   // BT callback auto-sends silence
-    a2dpCfg.buffer_size       = 512;    // small ring buffer (default can be up to 15K)
     a2dpCfg.buffer_size       = 512;    // minimum ring buffer (default 15 KB!)
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
@@ -397,6 +396,24 @@ void loop() {
         if (!streamClient.connected() && !streamClient.available()) {
             Serial.printf("%lu [audio] Stream ended\n", millis());
             stopPlayback();
+        }
+    }
+
+    // ── BT keepalive (non-blocking) ───────────────────────────────
+    // The ENEBY20 disconnects after ~10 s of no audio.  silence_on_nodata
+    // should handle this, but BufferRTOS::readArray may block on the read
+    // side when the buffer is empty, preventing the silence fallback from
+    // firing.  Feed small silence into the ring buffer periodically so the
+    // callback always finds data.  The availableForWrite() guard ensures
+    // we never block when the buffer is full.
+    if (!isPlaying && a2dpStream.isConnected()) {
+        static unsigned long lastSilence = 0;
+        if (now - lastSilence >= 200) {
+            lastSilence = now;
+            static const uint8_t silence[64] = {0};
+            if (a2dpStream.availableForWrite() >= (int)sizeof(silence)) {
+                a2dpStream.write(silence, sizeof(silence));
+            }
         }
     }
 
