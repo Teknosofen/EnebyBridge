@@ -49,8 +49,6 @@ String    pendingUrl   = "";
 unsigned long lastWifiCheck = 0;
 const unsigned long WIFI_CHECK_MS = 10000;  // poll every 10 s
 int wifiFailCount = 0;
-int32_t  cachedChannel = 0;                 // from pre-scan, reused in reconnect
-uint8_t  cachedBSSID[6] = {0};
 
 // ─── URL parser ──────────────────────────────────────────────────────────────
 bool parseUrl(const String& url, String& host, uint16_t& port, String& path) {
@@ -215,34 +213,12 @@ void setup() {
     // ── minimp3 init (zero-alloc — just zeroes the struct in BSS) ────────
     mp3dec_init(&mp3d);
 
-    // ── WiFi stack + pre-scan ────────────────────────────────────────────
-    // 1. Initialize WiFi at high heap (~170 KB) and set PS_NONE now.
-    // 2. Quick-scan to discover our AP's channel + BSSID.
-    // 3. After BT connects, use WiFi.begin(ssid,pass,channel,bssid) which
-    //    SKIPS the channel scan.  This takes <500 ms instead of 2-4 s,
-    //    preventing BT supervision timeout.
+    // ── WiFi stack init (at high heap) ─────────────────────────────────
     WiFi.mode(WIFI_STA);
-    // Don't set PS_NONE — it gets applied lazily at connect time, when heap
-    // is low, and pm_set_sleep_type crashes or disrupts BT.
-    // Default MIN_MODEM will be used.
     WiFi.setAutoReconnect(true);
     Serial.printf("%lu [wifi] Stack init, heap: %d\n", millis(), ESP.getFreeHeap());
 
-    int n = WiFi.scanNetworks(false, false, false, 300);  // active scan, 300ms/ch
-    for (int i = 0; i < n; i++) {
-        if (String(WIFI_SSID) == WiFi.SSID(i)) {
-            cachedChannel = WiFi.channel(i);
-            memcpy(cachedBSSID, WiFi.BSSID(i), 6);
-            Serial.printf("%lu [wifi] Found '%s' on ch %d (RSSI %d)\n",
-                          millis(), WIFI_SSID, cachedChannel, WiFi.RSSI(i));
-            break;
-        }
-    }
-    WiFi.scanDelete();  // free scan results
-    Serial.printf("%lu [wifi] Pre-scan done, heap: %d\n", millis(), ESP.getFreeHeap());
-
     // ── Coexistence ──────────────────────────────────────────────────
-    // Start with BALANCE; switch to PREFER_WIFI during WPA handshake.
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
 
     // ── Bluetooth A2DP ───────────────────────────────────────────────────
@@ -262,9 +238,6 @@ void setup() {
     }
     if (a2dpStream.isConnected()) {
         Serial.printf("\n%lu [bt] Connected! (heap: %d)\n", millis(), ESP.getFreeHeap());
-        // Let AVDTP signaling (codec negotiation, stream open) finish
-        // before touching WiFi.  isConnected() fires on A2DP profile
-        // connect, but the audio stream may still be setting up.
         Serial.printf("%lu [bt] Waiting 3 s for AVDTP stream setup...\n", millis());
         delay(3000);
         Serial.printf("%lu [bt] Settled (heap: %d, bt: %s)\n",
@@ -274,25 +247,17 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── WiFi connect (scan-free) ─────────────────────────────────────────
-    // Reset WiFi state machine — after scanNetworks() + scanDelete() the
-    // driver can be stuck in a post-scan state.  disconnect() clears it.
-    WiFi.disconnect(false);   // false = keep STA mode active
-    delay(100);
-
-    // Give WiFi radio priority for the WPA handshake.  BT AVDTP is
-    // already established (20 s supervision timeout) so it survives a
-    // few seconds of lower priority.
+    // ── WiFi connect ─────────────────────────────────────────────────────
+    // No pre-scan: scanNetworks() leaves WiFi state machine dirty after
+    // 6+ s of BT activity.  Normal WiFi.begin() with full scan takes
+    // 2-4 s — BT survives this (20 s AVDTP supervision timeout) when
+    // we give WiFi priority during the handshake.
     esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-    Serial.printf("%lu [wifi] Coex → PREFER_WIFI for association\n", millis());
+    Serial.printf("%lu [wifi] Coex -> PREFER_WIFI for association\n", millis());
 
-    if (cachedChannel > 0) {
-        WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
-        Serial.printf("%lu [wifi] Connecting (ch %d, no scan)...\n", millis(), cachedChannel);
-    } else {
-        WiFi.begin(WIFI_SSID, WIFI_PASS);
-        Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
-    }
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.printf("%lu [wifi] Connecting (full scan)...\n", millis());
+
     unsigned long wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
         delay(200);
@@ -300,7 +265,7 @@ void setup() {
 
     // Return to balanced coex now that association is done (or timed out).
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-    Serial.printf("%lu [wifi] Coex → PREFER_BALANCE\n", millis());
+    Serial.printf("%lu [wifi] Coex -> PREFER_BALANCE\n", millis());
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
@@ -337,11 +302,7 @@ void loop() {
                 esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
                 WiFi.disconnect(false);  // keep radio on!
                 delay(500);
-                if (cachedChannel > 0) {
-                    WiFi.begin(WIFI_SSID, WIFI_PASS, cachedChannel, cachedBSSID);
-                } else {
-                    WiFi.begin(WIFI_SSID, WIFI_PASS);
-                }
+                WiFi.begin(WIFI_SSID, WIFI_PASS);
             }
             if (isPlaying) {
                 Serial.printf("%lu [wifi] Stopping playback — no network\n", millis());
