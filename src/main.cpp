@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <esp_coexist.h>
 #include <esp_wifi.h>
+#include <esp_bt.h>
 
 // A2DPStream from audio-tools for Bluetooth A2DP output
 #include "AudioTools.h"
@@ -234,21 +235,30 @@ void setup() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("%lu [wifi] Connected. IP: %s  heap: %d\n",
                       millis(), WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
+        // Set WiFi power save to NONE now while heap is high (~121 KB).
+        // This avoids lazy alloc of pm_set_sleep_type later at low heap.
+        esp_wifi_set_ps(WIFI_PS_NONE);
     } else {
         Serial.printf("%lu [wifi] Not connected yet — will retry in loop\n", millis());
     }
 
-    // ── 2. Coex: prioritize BT for pairing ──────────────────────────
+    // ── 2. Coex: prioritize BT for pairing ──────────────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
 
-    // ── 3. Bluetooth A2DP ────────────────────────────────────────────
+    // ── 3. Release BLE controller memory ─ we only use BT Classic ────
+    // The default BT config reserves ~30 KB for BLE. We don't use BLE,
+    // so releasing it before the A2DP library calls esp_bt_controller_init()
+    // gives us critical extra heap.
+    esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+    Serial.printf("%lu [bt] BLE memory released, heap: %d\n", millis(), ESP.getFreeHeap());
+
+    // ── 4. Bluetooth A2DP ────────────────────────────────────────
     Serial.printf("%lu [bt] Starting A2DP to '%s'...\n", millis(), BT_DEVICE_NAME);
     auto a2dpCfg = a2dpStream.defaultConfig(TX_MODE);
     a2dpCfg.name              = BT_DEVICE_NAME;
     a2dpCfg.auto_reconnect    = true;
     a2dpCfg.silence_on_nodata = true;   // BT callback auto-sends silence
-                                         // when ring buffer is empty —
-                                         // keeps speaker from disconnecting
+    a2dpCfg.buffer_size       = 512;    // minimum ring buffer (default 15 KB!)
     a2dpStream.begin(a2dpCfg);
     a2dpStream.setVolume(currentVolume / 100.0f);
 
@@ -269,7 +279,7 @@ void setup() {
         Serial.printf("\n%lu [bt] Not connected yet — auto_reconnect active\n", millis());
     }
 
-    // ── 4. Switch to balanced coex for normal operation ──────────────
+    // ── 5. Switch to balanced coex for normal operation ──────────────
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     Serial.printf("%lu [coex] -> PREFER_BALANCE\n", millis());
 
