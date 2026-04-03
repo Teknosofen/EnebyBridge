@@ -412,9 +412,15 @@ void loop() {
     // the coex scheduler, so WiFi takes over and BT supervision times out.
     // Writing a small silence buffer keeps the A2DP source active and
     // forces the coex scheduler to keep granting BT radio time.
+    // IMPORTANT: Throttle writes — a2dpStream.write() can block when the
+    // internal ring buffer is full, which starves server.handleClient().
     if (!isPlaying && a2dpStream.isConnected()) {
-        static const uint8_t silence[128] = {0};
-        a2dpStream.write(silence, sizeof(silence));
+        static unsigned long lastSilence = 0;
+        if (now - lastSilence >= 20) {            // ~50 Hz, enough for BT keepalive
+            lastSilence = now;
+            static const uint8_t silence[128] = {0};
+            a2dpStream.write(silence, sizeof(silence));
+        }
     }
 
     // ── BT status (idle) ─────────────────────────────────────────────────
