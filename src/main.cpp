@@ -3,7 +3,6 @@
 #include <WebServer.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
-#include <esp_wifi.h>
 
 // A2DPStream from audio-tools for Bluetooth A2DP output
 #include "AudioTools.h"
@@ -250,7 +249,6 @@ void setup() {
     } else {
         Serial.printf("\n%lu [wifi] Not connected yet — will retry in loop\n", millis());
     }
-    esp_wifi_set_ps(WIFI_PS_NONE);
 
     Serial.printf("%lu [audio] Ready (heap: %d)\n", millis(), ESP.getFreeHeap());
 
