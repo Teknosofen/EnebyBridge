@@ -318,6 +318,59 @@ sudo systemctl restart eneby-bridge
 
 ---
 
+## Changing WiFi network
+
+When moving the bridge to a different location with a different WiFi network:
+
+### Before moving: add the new network via SSH
+
+```bash
+sudo nmcli connection add type wifi con-name "vacation-house" \
+  ssid "OtherNetworkSSID" wifi-sec.key-mgmt wpa-psk \
+  wifi-sec.psk "OtherNetworkPassword"
+```
+
+The Pi will automatically connect to whichever known network is available
+at boot. You can add as many networks as you want.
+
+List configured networks:
+
+```bash
+nmcli connection show
+```
+
+Remove a network:
+
+```bash
+sudo nmcli connection delete "vacation-house"
+```
+
+> **Note:** Older Pi OS (before Bookworm) uses `wpa_supplicant` instead of
+> NetworkManager. In that case, edit `/etc/wpa_supplicant/wpa_supplicant.conf`
+> and add a second `network={}` block.
+
+### Emergency access: USB gadget mode
+
+If the Pi is already at a new location and can't connect to any known
+network, you can access it over USB:
+
+1. On the Pi's SD card, add to `/boot/config.txt`:
+   ```
+   dtoverlay=dwc2
+   ```
+   And add `modules-load=dwc2,g_ether` to `/boot/cmdline.txt` (after `rootwait`).
+
+2. Plug the Pi into your laptop via the **USB data port** (not the power port).
+   It appears as a USB Ethernet device.
+
+3. SSH in via `ssh pi@raspberrypi.local` and configure the new WiFi with
+   `nmcli` as shown above.
+
+> **Tip:** Enable USB gadget mode ahead of time so it's ready if you ever
+> need emergency access.
+
+---
+
 ## API Reference
 
 Same as the ESP32 version:
