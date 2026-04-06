@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
+User=hasseberg
 Environment=PORT=80
-WorkingDirectory=/home/pi/EnebyBridge/pi
-ExecStart=/usr/bin/python3 /home/pi/EnebyBridge/pi/eneby_bridge.py
+WorkingDirectory=/home/hasseberg/EnebyBridge/pi
+ExecStart=/usr/bin/python3 /home/hasseberg/EnebyBridge/pi/eneby_bridge.py
 Restart=on-failure
 RestartSec=5
 

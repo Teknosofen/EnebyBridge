@@ -25,7 +25,7 @@ Same HTTP API as the ESP32 version — your Home Assistant config works unchange
    - Click the **gear icon** (⚙) or **Edit Settings** before writing:
      - **Hostname:** `eneby` (or whatever you prefer)
      - **Enable SSH:** Yes, use password authentication
-     - **Username:** `pi`, **Password:** choose one
+     - **Username:** `hasseberg`, **Password:** choose one
      - **WiFi:** enter your SSID and password, choose your country
    - Click **Write**
 
@@ -46,8 +46,8 @@ ping eneby.local
 Then SSH in:
 
 ```bash
-ssh pi@eneby.local
-# or: ssh pi@<ip-address>
+ssh hasseberg@eneby.local
+# or: ssh hasseberg@<ip-address>
 ```
 
 ---
@@ -83,7 +83,7 @@ If the repo is private, you'll need a Personal Access Token:
 
 1. Go to https://github.com/settings/tokens
 2. Click **Generate new token (classic)**
-3. Give it a name (e.g. "pi-eneby"), select **repo** scope
+3. Give it a name (e.g. "hasseberg-eneby"), select **repo** scope
 4. Copy the token
 
 Then clone with the token:
@@ -97,7 +97,7 @@ git clone https://<YOUR_TOKEN>@github.com/Teknosofen/EnebyBridge.git
 Generate an SSH key on the Pi:
 
 ```bash
-ssh-keygen -t ed25519 -C "pi-eneby"
+ssh-keygen -t ed25519 -C "hasseberg-eneby"
 # Press Enter for all prompts (no passphrase needed)
 ```
 
@@ -157,7 +157,7 @@ pactl info
 To make PulseAudio start even without a login session (needed for autostart):
 
 ```bash
-loginctl enable-linger pi
+loginctl enable-linger hasseberg
 ```
 
 ---
@@ -314,7 +314,7 @@ sudo systemctl restart eneby-bridge
 | Permission denied on port 80 | The systemd unit grants `CAP_NET_BIND_SERVICE`. For manual testing use `sudo` or set `PORT=8080` |
 | ENEBY20 doesn't reconnect after reboot | Ensure `trust` was set in `bluetoothctl`; add `connect AA:BB:CC:DD:EE:FF` to a boot script if needed |
 | `pip3 install` fails with "externally managed" | Use `--break-system-packages` flag or create a venv (see Step 6) |
-| mpv can't find PulseAudio | Ensure `loginctl enable-linger pi` was run (Step 7) |
+| mpv can't find PulseAudio | Ensure `loginctl enable-linger hasseberg` was run (Step 7) |
 
 ---
 
@@ -363,7 +363,7 @@ network, you can access it over USB:
 2. Plug the Pi into your laptop via the **USB data port** (not the power port).
    It appears as a USB Ethernet device.
 
-3. SSH in via `ssh pi@raspberrypi.local` and configure the new WiFi with
+3. SSH in via `ssh hasseberg@raspberrypi.local` and configure the new WiFi with
    `nmcli` as shown above.
 
 > **Tip:** Enable USB gadget mode ahead of time so it's ready if you ever
