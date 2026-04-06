@@ -189,10 +189,12 @@ scan on
 ```
 
 5. Wait until you see `ENEBY20` appear (something like `[NEW] Device FC:58:FA:31:65:77 ENEBY20`).
+   You'll see many other devices scroll by — ignore them and wait for ENEBY20.
 
-6. Pair and trust:
+6. **Stop scanning and pair/trust/connect** (don't quit before this!):
 
 ```
+scan off
 pair FC:58:FA:31:65:77
 trust FC:58:FA:31:65:77
 connect FC:58:FA:31:65:77
@@ -208,7 +210,14 @@ pactl list short sinks
 
 You should see a line like:
 ```
-bluez_sink.AA_BB_CC_DD_EE_FF.a2dp_sink    module-bluez5-device.c ...
+bluez_sink.FC_58_FA_31_65_77.a2dp_sink    module-bluez5-device.c ...
+```
+
+If you only see `auto_null`, restart PulseAudio and check again:
+
+```bash
+systemctl --user restart pulseaudio
+pactl list short sinks
 ```
 
 ---
