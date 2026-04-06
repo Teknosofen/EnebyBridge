@@ -8,7 +8,7 @@ Type=simple
 User=hasseberg
 Environment=PORT=80
 WorkingDirectory=/home/hasseberg/EnebyBridge/pi
-ExecStart=/usr/bin/python3 /home/hasseberg/EnebyBridge/pi/eneby_bridge.py
+ExecStart=/home/hasseberg/EnebyBridge/pi/venv/bin/python3 /home/hasseberg/EnebyBridge/pi/eneby_bridge.py
 Restart=on-failure
 RestartSec=5
 

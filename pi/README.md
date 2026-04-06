@@ -235,8 +235,11 @@ Now test the bridge service:
 
 ```bash
 cd ~/EnebyBridge/pi
-sudo python3 eneby_bridge.py
+sudo /home/hasseberg/EnebyBridge/pi/venv/bin/python3 eneby_bridge.py
 ```
+
+> **Note:** `sudo` is needed for port 80. Using the venv's Python ensures
+> Flask is available. The systemd service handles this automatically.
 
 From another terminal (or your computer):
 
