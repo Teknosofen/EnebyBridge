@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=hasseberg
 Environment=PORT=80
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 WorkingDirectory=/home/hasseberg/EnebyBridge/pi
 ExecStart=/home/hasseberg/EnebyBridge/pi/venv/bin/python3 /home/hasseberg/EnebyBridge/pi/eneby_bridge.py
 Restart=on-failure
