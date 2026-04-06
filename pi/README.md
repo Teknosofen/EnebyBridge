@@ -173,6 +173,17 @@ loginctl enable-linger hasseberg
 sudo rfkill unblock bluetooth
 ```
 
+   To make this persist across reboots, create `/etc/rc.local`:
+
+```bash
+sudo tee /etc/rc.local << 'EOF'
+#!/bin/sh
+rfkill unblock bluetooth
+exit 0
+EOF
+sudo chmod +x /etc/rc.local
+```
+
 3. On the Pi:
 
 ```bash
@@ -296,16 +307,48 @@ sudo systemctl disable eneby-bridge
 
 ---
 
-## Step 11: Update Home Assistant
+## Step 11: Add to Home Assistant
 
-In your `home_assistant.yaml` / `configuration.yaml`, change the ESP32 IP
-to the Pi's IP (or hostname):
+The file `home_assistant.yaml` in this repo contains everything you need:
+REST commands, a media player entity, a radio station selector (P1, P2, P3,
+P4 Stockholm, P4 Göteborg, RIX FM, Lugna Favoriter), and automations.
+
+### How to add it
+
+1. **Open your HA config file.** Use the **File Editor** add-on
+   (Settings → Add-ons → File Editor) or the **Studio Code Server** add-on.
+   The file is at `/config/configuration.yaml`.
+
+2. **Copy and paste** the contents of `home_assistant.yaml` from this repo
+   at the bottom of your `configuration.yaml`.
+
+   > **Important:** If you already have sections like `rest_command:`,
+   > `automation:`, `sensor:`, or `input_select:`, **merge** the entries
+   > under the existing key — don't add a duplicate key.
+
+3. **Check the config:** In HA, go to **Settings → System** → top-right
+   menu (⋮) → **Check Configuration**.
+
+4. **Restart HA:** Settings → System → **Restart**.
+
+5. **Verify:** Go to **Developer Tools → States** and search for
+   `sensor.eneby_status`. It should show `idle` or `playing`.
+
+### Add the station selector to a dashboard
+
+1. Go to your dashboard → **Edit** → **Add card**
+2. Choose **Entities** card
+3. Add `input_select.eneby_radio_station`
+4. Optionally add `media_player.eneby_speaker` for volume control
+
+Select a station from the dropdown to start playback. Select **"Av"** to stop.
+
+### Test from Developer Tools
 
 ```yaml
-rest_command:
-  eneby_play:
-    url: "http://eneby.local/play"
-    # ... rest stays the same
+service: rest_command.eneby_play
+data:
+  url: "https://sverigesradio.se/topsy/direkt/164-hi-mp3"
 ```
 
 ---
