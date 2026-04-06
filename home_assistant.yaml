@@ -1,23 +1,24 @@
 # ─── Home Assistant integration for Eneby BT bridge ─────────────────────────
 #
-# Replace 192.168.1.44 with your Pi's actual IP address.
+# Uses eneby.local (mDNS) so it works on any network without changing IPs.
+# If mDNS doesn't work in your setup, replace eneby.local with the Pi's IP.
 # Add these to your configuration.yaml (or split into separate files).
 #
 
 # ─── REST commands (send play/stop/volume to the Pi) ─────────────────────────
 rest_command:
   eneby_play:
-    url: "http://192.168.1.44/play"
+    url: "http://eneby.local/play"
     method: GET
     params:
       url: "{{ url }}"
 
   eneby_stop:
-    url: "http://192.168.1.44/stop"
+    url: "http://eneby.local/stop"
     method: GET
 
   eneby_volume:
-    url: "http://192.168.1.44/volume"
+    url: "http://eneby.local/volume"
     method: GET
     params:
       level: "{{ level }}"
@@ -50,7 +51,7 @@ media_player:
 sensor:
   - platform: rest
     name: eneby_status
-    resource: "http://192.168.1.44/status"
+    resource: "http://eneby.local/status"
     scan_interval: 10
     value_template: "{{ 'playing' if value_json.playing else 'idle' }}"
     json_attributes:
