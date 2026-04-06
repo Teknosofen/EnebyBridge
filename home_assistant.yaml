@@ -37,7 +37,7 @@ media_player:
         turn_on:
           service: rest_command.eneby_play
           data:
-            url: "http://your-default-radio-stream.com/stream.mp3"
+            url: "https://sverigesradio.se/topsy/direkt/164-hi-mp3"
         turn_off:
           service: rest_command.eneby_stop
         set_volume:
@@ -58,21 +58,53 @@ sensor:
       - url
       - bt_sink
 
-# ─── Example automations ─────────────────────────────────────────────────────
+# ─── Radio station selector ──────────────────────────────────────────────────
+input_select:
+  eneby_radio_station:
+    name: Radiokanal
+    options:
+      - "Av"
+      - "P1"
+      - "P2"
+      - "P3"
+      - "P4 Stockholm"
+      - "P4 Göteborg"
+      - "RIX FM"
+      - "Lugna Favoriter"
+    initial: "Av"
+    icon: mdi:radio
 
-# Play a radio stream
+# ─── Automations ─────────────────────────────────────────────────────────────
+
 automation:
-  - alias: "Eneby - Play Radio"
+  - alias: "Eneby - Play Selected Station"
     trigger:
       - platform: state
-        entity_id: input_boolean.play_radio
-        to: "on"
+        entity_id: input_select.eneby_radio_station
     action:
-      - service: rest_command.eneby_play
-        data:
-          url: "http://ice1.somafm.com/groovesalad-128-mp3"  # example stream
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_select.eneby_radio_station
+                state: "Av"
+            sequence:
+              - service: rest_command.eneby_stop
+        default:
+          - service: rest_command.eneby_play
+            data:
+              url: >
+                {% set station = states('input_select.eneby_radio_station') %}
+                {% set urls = {
+                  'P1':              'https://sverigesradio.se/topsy/direkt/132-hi-mp3',
+                  'P2':              'https://sverigesradio.se/topsy/direkt/2562-hi-mp3',
+                  'P3':              'https://sverigesradio.se/topsy/direkt/164-hi-mp3',
+                  'P4 Stockholm':    'https://sverigesradio.se/topsy/direkt/701-hi-mp3',
+                  'P4 Göteborg':     'https://sverigesradio.se/topsy/direkt/212-hi-mp3',
+                  'RIX FM':          'https://live-bauerse.sharp-stream.com/rixfm_mp3_128',
+                  'Lugna Favoriter': 'https://live-bauerse.sharp-stream.com/lugnafavoriter_mp3_128'
+                } %}
+                {{ urls[station] }}
 
-  # Stop when leaving home
   - alias: "Eneby - Stop on Away"
     trigger:
       - platform: state
@@ -80,6 +112,11 @@ automation:
         to: "not_home"
     action:
       - service: rest_command.eneby_stop
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.eneby_radio_station
+        data:
+          option: "Av"
 
 # ─── Script: play any URL from HA UI ─────────────────────────────────────────
 script:
