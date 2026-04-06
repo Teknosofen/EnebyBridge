@@ -1,0 +1,19 @@
+[Unit]
+Description=Eneby BT Bridge — internet radio to Bluetooth speaker
+After=network-online.target bluetooth.target pulseaudio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=PORT=80
+WorkingDirectory=/home/pi/EnebyBridge/pi
+ExecStart=/usr/bin/python3 /home/pi/EnebyBridge/pi/eneby_bridge.py
+Restart=on-failure
+RestartSec=5
+
+# Allow binding to port 80 without root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
