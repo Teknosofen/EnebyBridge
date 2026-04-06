@@ -8,16 +8,23 @@ WiFi → Bluetooth A2DP bridge for IKEA Eneby 20 using a plain ESP32-WROOM
 ```
 Home Assistant
     │
-    │  HTTP REST (play URL / stop / volume)
+    │  HTTP REST (play / stop / volume / status)
     ▼
 ESP32-WROOM
-    ├── pulls MP3 stream from URL
-    ├── decodes with Helix MP3 decoder
-    └── sends PCM via Bluetooth A2DP
+    ├── WiFiClient pulls MP3 stream over TCP
+    ├── minimp3 decodes to PCM (BSS, zero heap alloc)
+    ├── lock-free SPSC ring buffer (5 KB, BSS)
+    └── BluetoothA2DPSource callback → SBC → BT radio
             │
             ▼
         IKEA Eneby 20
 ```
+
+> **Known limitation:** The ESP32 shares a single 2.4 GHz radio between
+> WiFi and Bluetooth. Heap fragmentation from lwIP packet buffers
+> eventually starves the BT SBC encoder, causing intermittent audio
+> (~60-65% real PCM). A Raspberry Pi Zero 2 W with separate radios
+> would solve this reliably.
 
 ## Hardware
 
@@ -89,15 +96,25 @@ Replace `192.168.1.XXX` with your ESP32's IP throughout.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Heap allocation failed | Buffer too large | Reduce `HTTP_STREAM_BUFFER_SIZE` in config.h |
-| Stuttering audio | WiFi interference | Confirm `WIFI_PS_NONE` is set (it is by default) |
+| `hash_map_set` crash at boot | Ring buffer or BSS too large | Keep `PCM_RING_SIZE` ≤ 5120 |
+| WiFi drops during streaming | Heap fragmentation (blk < 2 KB) | Proactive reconnect handles this automatically |
 | BT won't connect | Eneby paired to another device | Forget the ESP32 on the Eneby and re-pair |
-| Stream won't start | URL not MP3 | Check content-type; only MP3 supported currently |
+| Stream won't start | URL not MP3 | Only raw MP3 streams supported (no HLS/AAC) |
+| No sound but playing | BT callback not firing | Check serial for `audio=STREAM` and `bt_cb > 0` |
+| Intermittent audio (~60%) | ESP32 single-radio limitation | Normal — see Known Limitation above |
 
 ## Memory notes
 
-The WROOM has 520KB internal RAM. After WiFi+BT stack the usable heap is
-roughly 200KB. The audio buffer is set to 16KB — if you see heap errors,
-reduce `HTTP_STREAM_BUFFER_SIZE` in `config.h` to 8KB.
+The WROOM has 520 KB internal SRAM. After WiFi + BT Classic init, ~30 KB
+of heap remains. All decoder state is in BSS (zero heap allocation).
 
-Free heap is reported in `/status` → useful for diagnosing memory issues.
+Key static allocations (BSS):
+- Ring buffer: 5 KB
+- MP3 input buffer: 4 KB
+- minimp3 decoder + PCM output: ~12 KB
+
+`esp_bt_controller_mem_release(ESP_BT_MODE_BLE)` frees ~10 KB of contiguous
+DRAM that BLE would otherwise reserve.
+
+Free heap and largest contiguous block are reported in `/status` and on
+serial every 2–5 seconds.

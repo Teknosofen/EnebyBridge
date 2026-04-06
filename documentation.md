@@ -28,16 +28,18 @@ No additional hardware is required — just an ESP32-WROOM-32 and a USB cable.
 │                  ESP32-WROOM                      │
 │                                                   │
 │  ┌───────────┐    ┌──────────────┐    ┌────────┐ │
-│  │ URLStream │──▶│ MP3 Decoder  │──▶│ A2DP   │ │
-│  │ (HTTP/WiFi)│    │ (minimp3)    │    │ Stream │ │
+│  │WiFiClient │──▶│ minimp3      │──▶│ SPSC   │ │
+│  │(raw TCP)  │    │ (BSS, 0 heap)│    │ ring   │ │
 │  └───────────┘    └──────────────┘    └───┬────┘ │
+│   core 1: loop()                          │      │
 │                                           │      │
 │  ┌─────────────┐   ┌───────────────────┐  │      │
 │  │ WebServer   │   │ WiFi reconnect    │  │      │
-│  │ (HTTP API)  │   │ + coex scheduler  │  │      │
+│  │ (HTTP API)  │   │ + heap monitor    │  │      │
 │  └─────────────┘   └───────────────────┘  │      │
+│                     core 0: BT callback ──┘      │
 └───────────────────────────────────────────┼──────┘
-                                            │ Bluetooth A2DP
+                                            │ BT A2DP (SBC)
                                             ▼
                                     ┌──────────────┐
                                     │  IKEA Eneby   │
@@ -47,17 +49,21 @@ No additional hardware is required — just an ESP32-WROOM-32 and a USB cable.
 
 ### Audio pipeline
 
-The audio pipeline is a three-stage chain:
+The audio pipeline is a three-stage chain with all decoder state in BSS
+(zero heap allocation):
 
-1. **URLStream** — Opens an HTTP connection to the given MP3 URL and pulls
-   audio data in chunks over WiFi.
-2. **EncodedAudioStream + MP3DecoderMini** — Decodes the MP3 frames into raw
-   PCM (44100 Hz, 16-bit, stereo) using the lightweight minimp3 library.
-3. **A2DPStream** — Transmits the decoded PCM samples to the Eneby speaker
-   over Classic Bluetooth A2DP (Advanced Audio Distribution Profile).
+1. **WiFiClient** — Opens a raw TCP connection to the MP3 stream URL and
+   reads data in chunks. Non-blocking header parsing prevents lwIP deadlocks
+   at low heap. Supports HTTP redirects (up to 3).
+2. **minimp3** — Decodes MP3 frames into raw PCM (44100 Hz, 16-bit, stereo).
+   The decoder context, input buffer (4 KB), and PCM output buffer all live
+   in BSS, never competing with the WiFi/BT heap.
+3. **BluetoothA2DPSource** — A lock-free SPSC ring buffer (5 KB, BSS) bridges
+   the decoder (core 1) and the BT data callback (core 0). The callback
+   always returns `len` bytes, padding with silence when the ring is empty.
 
-A `StreamCopy` object drives the pipeline by pulling data from URLStream and
-pushing it through the decoder into the A2DP output in each `loop()` iteration.
+A single-step decode loop in `loop()` reads TCP data, decodes one MP3
+frame, and writes PCM to the ring buffer each iteration.
 
 ### WiFi / Bluetooth coexistence
 
@@ -65,15 +71,24 @@ The ESP32-WROOM has a **single 2.4 GHz radio** shared between WiFi and
 Bluetooth via time-division multiplexing. This project addresses the coexistence
 challenge with:
 
-- **`esp_coex_preference_set(ESP_COEX_PREFER_BT)`** — Tells the radio scheduler
-  to prioritize Bluetooth. A2DP is latency-sensitive; HTTP streaming tolerates
-  jitter.
-- **`WIFI_PS_MIN_MODEM`** — Keeps WiFi in minimum-power sleep so it yields
-  radio time to BT more gracefully.
-- **Enlarged A2DP buffers** (12 × 512 B = 6 KB) — Absorbs timing jitter when
-  the radio briefly switches to WiFi.
-- **Automatic WiFi reconnection** — Polls connection health every 10 seconds;
-  forces a full reconnect cycle every 3rd failure.
+- **`ESP_COEX_PREFER_BT`** during pairing, then **`ESP_COEX_PREFER_BALANCE`**
+  for normal operation. Changing coex during A2DP streaming kills BT callbacks.
+- **20 MHz WiFi bandwidth** (`WIFI_BW_HT20`) — halves WiFi radio time per
+  packet, leaving more air time for BT A2DP.
+- **BLE memory release** (`esp_bt_controller_mem_release(ESP_BT_MODE_BLE)`) —
+  frees ~10 KB of contiguous DRAM since only BT Classic is used.
+- **Reduced A2DP buffers** (2 × 512 B = 1 KB) and **reduced lwIP TCP buffers**
+  (2920 B window) to minimize heap pressure.
+- **Proactive reconnect** — monitors `heap_caps_get_largest_free_block()` and
+  disconnects TCP before fragmentation kills both radios.
+- **Automatic WiFi reconnection** — polls every 5 seconds; nudges reconnect
+  every 2nd failure.
+
+> **Known limitation:** Despite these optimizations, lwIP packet buffer
+> allocation fragments the heap over 10–30 seconds, dropping `max_blk`
+> below the ~2 KB needed for WiFi DMA and BT SBC encoding. This causes
+> intermittent audio (~60–65% real PCM). A platform with separate WiFi
+> and BT radios (e.g. Raspberry Pi Zero 2 W) would avoid this entirely.
 
 ---
 
@@ -87,8 +102,10 @@ challenge with:
 | **Home Assistant integration** | REST commands, template media_player, REST sensor, automations |
 | **BT auto-reconnect** | Automatically reconnects to the Eneby when powered on |
 | **WiFi auto-reconnect** | Recovers from WiFi drops without rebooting |
-| **BT-priority coexistence** | Radio scheduler prioritizes A2DP to prevent audio drops |
-| **Low memory footprint** | Uses minimp3 decoder; runs on WROOM (520 KB RAM, no PSRAM) |
+| **BT-priority pairing, balanced streaming** | Coex set to PREFER_BT for pairing, PREFER_BALANCE during playback |
+| **BLE memory release** | Frees ~10 KB contiguous DRAM for BT Classic + WiFi |
+| **Proactive reconnect** | Monitors heap fragmentation; reconnects TCP before radios die |
+| **Low memory footprint** | All decoder state in BSS; runs on WROOM (520 KB RAM, no PSRAM) |
 
 ---
 
@@ -109,7 +126,6 @@ Copy `include/config.h.example` to `include/config.h` and edit:
 #define WIFI_PASS       "your_wifi_password"
 #define BT_DEVICE_NAME  "ENEBY20"          // your speaker's BT name
 #define HTTP_PORT       80
-#define HTTP_STREAM_BUFFER_SIZE  (16 * 1024)  // 16 KB — tune if needed
 ```
 
 ---
@@ -281,12 +297,15 @@ data:
 
 ## Boot sequence
 
-1. WiFi connects (15 s timeout; retries in the main loop if it fails)
-2. Power-save mode set to `WIFI_PS_MIN_MODEM`
-3. Coexistence scheduler set to `ESP_COEX_PREFER_BT`
-4. Bluetooth A2DP starts and connects to the Eneby (auto-reconnect enabled)
-5. HTTP server starts on the configured port
-6. Main loop: services HTTP requests, drives the audio pipeline, monitors WiFi
+1. WiFi connects first (clean radio, high heap ~130 KB)
+2. 20 MHz WiFi bandwidth set (`WIFI_BW_HT20`)
+3. Coexistence set to `ESP_COEX_PREFER_BT` for pairing
+4. BLE memory released (`esp_bt_controller_mem_release`)
+5. BluetoothA2DPSource starts and connects to the Eneby (auto-reconnect)
+6. Waits for BT audio state → Started (SBC encoder running)
+7. Coexistence switched to `ESP_COEX_PREFER_BALANCE`
+8. HTTP server starts on the configured port
+9. Main loop: services HTTP requests, drives the audio pipeline, monitors WiFi/heap
 
 ---
 
@@ -294,29 +313,36 @@ data:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| BT keeps dropping | Coex scheduler favoring WiFi | Verify `ESP_COEX_PREFER_BT` is set; check serial log |
-| WiFi won't reconnect | Auto-reconnect not kicking in | Watch serial — full reconnect fires every 3rd check |
-| Heap allocation failed | Buffers too large for available RAM | Reduce `HTTP_STREAM_BUFFER_SIZE` or `A2DP_BUFFER_COUNT` |
-| Stuttering audio | WiFi interference / weak signal | Move ESP32 closer to router; check free heap via `/status` |
+| `hash_map_set` crash at boot | Ring buffer or BSS too large for heap | Keep `PCM_RING_SIZE` ≤ 5120 |
+| WiFi drops during streaming | Heap fragmentation (blk < 2 KB) | Proactive reconnect handles this; stream auto-retries |
+| Heap allocation failed | TCP buffers fragmenting heap | Normal at low blk — check serial diagnostics |
+| Stuttering / intermittent audio | Single-radio coex limitation | Expected (~60-65% real PCM); see Known Limitation |
 | BT won't connect | Eneby paired to another device | Forget previous pairings on the Eneby and re-pair |
-| Stream won't start | URL not serving MP3 | Verify the URL serves `audio/mpeg` content |
-| No sound but "playing" | Volume too low or Eneby muted | Call `/volume?level=80`; check Eneby physical volume |
+| Stream won't start | URL not serving MP3 | Verify the URL serves raw MP3 (no HLS/AAC) |
+| No sound but "playing" | BT callback not firing | Check serial for `audio=STREAM` and `bt_cb > 0` |
+| Serial freezes after TCP connect | Header read deadlock | Non-blocking reader should prevent this; check heap |
 
 ---
 
 ## Memory budget
 
-The ESP32-WROOM has 520 KB internal SRAM. After WiFi + BT stacks initialize,
-roughly 140–200 KB of heap remains. Key allocations:
+The ESP32-WROOM has 520 KB internal SRAM. After WiFi + BT Classic stacks
+initialize, roughly 30–35 KB of heap remains. All decoder state is statically
+allocated in BSS to avoid competing with the WiFi/BT heap.
 
-| Component | Size |
-|---|---|
-| A2DP buffers | 12 × 512 B = 6 KB |
-| HTTP stream buffer | 16 KB |
-| MP3 decoder (minimp3) | ~20 KB |
-| WebServer | ~2 KB |
+| Component | Size | Location |
+|---|---|---|
+| PCM ring buffer | 5 KB | BSS |
+| MP3 input buffer | 4 KB | BSS |
+| minimp3 decoder context | ~7 KB | BSS |
+| PCM output buffer | ~4.5 KB | BSS |
+| A2DP buffers | 2 × 512 B = 1 KB | Heap (BT stack) |
+| lwIP TCP buffers | ~3 KB window | Heap (lwIP) |
+| WebServer | ~2 KB | Heap |
 
-Monitor free heap via the `/status` endpoint or serial output.
+BLE memory release (`esp_bt_controller_mem_release`) recovers ~10 KB of
+contiguous DRAM. Monitor free heap and largest contiguous block via `/status`
+or serial output (logged every 2–5 seconds).
 
 ---
 
@@ -343,6 +369,6 @@ Managed by PlatformIO (`platformio.ini`):
 
 | Library | Version | Purpose |
 |---|---|---|
-| [arduino-audio-tools](https://github.com/pschatzmann/arduino-audio-tools) | v1.0.0 | Audio pipeline framework (URLStream, StreamCopy, EncodedAudioStream) |
-| [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) | v1.8.4 | Bluetooth A2DP source driver |
-| [minimp3](https://github.com/pschatzmann/minimp3) | latest | Lightweight MP3 decoder |
+| [arduino-audio-tools](https://github.com/pschatzmann/arduino-audio-tools) | v1.0.0 | Dependency of ESP32-A2DP (not directly used in pipeline) |
+| [ESP32-A2DP](https://github.com/pschatzmann/ESP32-A2DP) | v1.8.4 | BluetoothA2DPSource — direct BT A2DP callback driver |
+| [minimp3](https://github.com/pschatzmann/minimp3) | latest | Lightweight zero-alloc MP3 decoder |

@@ -10,8 +10,3 @@
 
 // ─── Web API ─────────────────────────────────────────────────────────────────
 #define HTTP_PORT       80
-
-// ─── Audio ───────────────────────────────────────────────────────────────────
-// Reduce HTTP_STREAM_BUFFER_SIZE if you get heap allocation failures
-// Increase it if you get stuttering (but check free heap first)
-#define HTTP_STREAM_BUFFER_SIZE  (4 * 1024)   // 4 KB — reduced to save heap
