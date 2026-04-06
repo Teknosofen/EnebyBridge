@@ -167,13 +167,19 @@ loginctl enable-linger hasseberg
 1. **Power on the ENEBY20** and put it in pairing mode (hold the BT button
    until the LED flashes)
 
-2. On the Pi:
+2. Unblock Bluetooth (needed on fresh Pi OS installs):
+
+```bash
+sudo rfkill unblock bluetooth
+```
+
+3. On the Pi:
 
 ```bash
 bluetoothctl
 ```
 
-3. In the bluetoothctl prompt:
+4. In the bluetoothctl prompt:
 
 ```
 power on
@@ -182,19 +188,19 @@ default-agent
 scan on
 ```
 
-4. Wait until you see `ENEBY20` appear (something like `[NEW] Device AA:BB:CC:DD:EE:FF ENEBY20`). Note the MAC address.
+5. Wait until you see `ENEBY20` appear (something like `[NEW] Device FC:58:FA:31:65:77 ENEBY20`).
 
-5. Pair and trust:
+6. Pair and trust:
 
 ```
-pair AA:BB:CC:DD:EE:FF
-trust AA:BB:CC:DD:EE:FF
-connect AA:BB:CC:DD:EE:FF
+pair FC:58:FA:31:65:77
+trust FC:58:FA:31:65:77
+connect FC:58:FA:31:65:77
 ```
 
-6. You should see `Connection successful`. Type `quit` to exit.
+7. You should see `Connection successful`. Type `quit` to exit.
 
-7. Verify PulseAudio sees the BT sink:
+8. Verify PulseAudio sees the BT sink:
 
 ```bash
 pactl list short sinks
