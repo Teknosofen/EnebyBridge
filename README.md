@@ -1,7 +1,22 @@
-# Eneby BT Bridge — ESP32 WROOM
+# Eneby BT Bridge
 
-WiFi → Bluetooth A2DP bridge for IKEA Eneby 20 using a plain ESP32-WROOM
-(no PSRAM required). Controlled via a simple HTTP API from Home Assistant.
+WiFi → Bluetooth A2DP bridge for IKEA Eneby 20. Streams internet radio
+(MP3) to the speaker, controlled via a simple HTTP API from Home Assistant.
+
+## ⚡ Raspberry Pi version (recommended)
+
+The **Pi Zero 2 W version** in [`pi/`](pi/) is the recommended platform.
+It uses separate WiFi and Bluetooth radios, giving reliable, uninterrupted
+audio. See [pi/README.md](pi/README.md) for full setup instructions.
+
+## ESP32 version (paused)
+
+The original ESP32-WROOM version in [`src/`](src/) works but is limited by
+the ESP32's single 2.4 GHz radio shared between WiFi and Bluetooth. After
+extensive optimization (BLE memory release, non-blocking I/O, proactive
+reconnect, coex tuning), it achieves ~60–65% real audio with intermittent
+gaps. The ESP32 code is preserved for reference but active development has
+moved to the Pi version.
 
 ## Architecture
 
