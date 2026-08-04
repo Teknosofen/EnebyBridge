@@ -1,7 +1,45 @@
-# Eneby BT Bridge — Raspberry Pi Zero 2 W
+# Eneby BT Bridge
 
-Streams internet radio (MP3) to an IKEA ENEBY20 Bluetooth speaker via A2DP.
-Same HTTP API as the ESP32 version — your Home Assistant config works unchanged.
+Streams internet radio (MP3) to an IKEA ENEBY20 Bluetooth speaker via A2DP,
+controlled through a simple HTTP API from Home Assistant.
+
+This project has two implementations:
+
+- **Raspberry Pi Zero 2 W (recommended, actively maintained)** — separate WiFi
+  and Bluetooth radios give reliable, uninterrupted audio. Documented below.
+- **ESP32-WROOM (paused, reference only)** — works but is limited by the
+  ESP32's single 2.4 GHz radio shared between WiFi and BT (~60–65% audio with
+  gaps). Documented in [../README.md](../README.md) and
+  [../documentation.md](../documentation.md).
+
+Both expose the same HTTP API, so your Home Assistant config works with either.
+
+**This file covers the Raspberry Pi version only.**
+
+---
+
+## Quick reference (once installed)
+
+| What | Value |
+|---|---|
+| SSH login | `ssh hasseberg@eneby.local` (username **hasseberg**, *not* `eneby`) |
+| SSH username | **`hasseberg`** |
+| SSH password | *(not stored here — see your password manager / private notes; set in Raspberry Pi Imager at flash time)* |
+| Hostname | `eneby.local` |
+| ENEBY20 BT MAC | `FC:58:FA:31:65:77` |
+| Pi BT controller | `B8:27:EB:...` (Raspberry Pi prefix) |
+| Service | `sudo systemctl {status\|restart} eneby-bridge` |
+| Audio backend | PulseAudio → `bluez_sink.FC_58_FA_31_65_77.a2dp_sink` |
+
+> **Username vs hostname:** `eneby` is the **hostname**, `hasseberg` is the
+> **SSH username**. Logging in as `eneby@eneby.local` fails with "Permission
+> denied" — always use `hasseberg@eneby.local`.
+>
+> **Password:** deliberately not written in this file because the repository is
+> public. Keep it in a password manager or a private note. If it's lost, reset
+> access by editing the SD card (`userconf.txt` on the boot partition) or
+> re-flash — or switch to SSH-key login (Step 5, Option B) to avoid needing a
+> password at all.
 
 ---
 
@@ -25,12 +63,18 @@ Same HTTP API as the ESP32 version — your Home Assistant config works unchange
    - Click the **gear icon** (⚙) or **Edit Settings** before writing:
      - **Hostname:** `eneby` (or whatever you prefer)
      - **Enable SSH:** Yes, use password authentication
-     - **Username:** `hasseberg`, **Password:** choose one
+     - **Username:** `hasseberg`, **Password:** choose one — **write it down!**
      - **WiFi:** enter your SSID and password, choose your country
+       (tip: you can add a second network later — see "Changing WiFi network")
    - Click **Write**
 
 4. Insert the SD card into the Pi Zero 2 W and power it on
 5. Wait ~60 seconds for first boot
+
+> **Save your credentials:** The username (`hasseberg`) and password are set
+> here and nowhere else. Store them in a password manager or notes — they are
+> not recoverable from the running Pi without physical SD-card access. (Losing
+> them means re-flashing or editing the SD card to reset access.)
 
 ---
 
@@ -370,12 +414,98 @@ sudo systemctl restart eneby-bridge
 
 | Symptom | Fix |
 |---|---|
+| SSH "Permission denied" | Username is `hasseberg`, not `eneby` (that's the hostname). Then check the password. |
 | `pactl: command not found` | `sudo apt install pulseaudio` |
+| `/status` shows `bt_sink: "not found"` and `pactl list short sinks` shows only `auto_null` | The BT sink is gone. See "Reconnecting the speaker" below. |
 | No BT sink in `pactl list short sinks` | Re-pair in `bluetoothctl`; restart PulseAudio: `systemctl --user restart pulseaudio` |
+| `connect` fails with `br-connection-key-missing` | Pairing key lost — you must `remove` and re-pair. See "Reconnecting the speaker". |
+| `pair` fails with `Device ... not available` | Device not currently visible — run `scan on` and wait for ENEBY20 first. |
 | Permission denied on port 80 | The systemd unit grants `CAP_NET_BIND_SERVICE`. For manual testing use `sudo` or set `PORT=8080` |
-| ENEBY20 doesn't reconnect after reboot | Ensure `trust` was set in `bluetoothctl`; add `connect AA:BB:CC:DD:EE:FF` to a boot script if needed |
+| ENEBY20 doesn't reconnect after reboot | Ensure `trust` was set in `bluetoothctl`; add a boot-time `connect` (see below) |
 | `pip3 install` fails with "externally managed" | Use `--break-system-packages` flag or create a venv (see Step 6) |
 | mpv can't find PulseAudio | Ensure `loginctl enable-linger hasseberg` was run (Step 7) |
+
+---
+
+## Reconnecting the speaker (after a break, power loss, or `br-connection-key-missing`)
+
+**The most common real-world issue.** After the bridge has been unused for a
+while (e.g. seasonal use), or if the ENEBY20 was paired to another device in
+the meantime, the Bluetooth pairing key is lost. Symptoms:
+
+- `/status` returns `"bt_sink": "not found"` (audio plays into nothing → silence)
+- `pactl list short sinks` shows only `auto_null`
+- The ENEBY20 LED **flashes fast** (it's in pairing mode, having "forgotten" the Pi)
+- `bluetoothctl connect` fails with
+  **`Failed to connect: org.bluez.Error.Failed br-connection-key-missing`**
+
+### Fix: remove the stale pairing and re-pair from scratch
+
+A plain `connect` will NOT work when the key is missing — you must remove and
+re-pair. On the Pi:
+
+```bash
+bluetoothctl
+```
+
+In the prompt:
+
+```
+power on
+remove FC:58:FA:31:65:77      # delete the stale/dead pairing
+agent on
+default-agent
+scan on
+```
+
+Now **put the ENEBY20 in pairing mode** (hold the BT button until the LED
+flashes fast). Wait until you see:
+
+```
+[NEW] Device FC:58:FA:31:65:77 ENEBY20
+```
+
+Then:
+
+```
+scan off
+pair FC:58:FA:31:65:77        # creates a fresh key — fixes the error
+trust FC:58:FA:31:65:77       # enables automatic reconnection in future
+connect FC:58:FA:31:65:77
+```
+
+You should see `Pairing successful` then `Connection successful`, and the
+prompt changes to `[ENEBY20]>`. Type `quit` to exit.
+
+### Verify and test
+
+```bash
+pactl list short sinks        # should now show bluez_sink.FC_58_FA_31_65_77.a2dp_sink
+curl "http://eneby.local/play?url=https://sverigesradio.se/topsy/direkt/164-hi-mp3"
+```
+
+### Common gotchas during re-pairing
+
+- **`pair` says "Device not available"** → it hasn't been rediscovered yet.
+  Run `scan on`, make sure the speaker is in pairing mode (flashing fast), and
+  wait for the `ENEBY20` line before `pair`.
+- **A phone steals the speaker** → BT speakers connect to one device at a time.
+  Turn off Bluetooth on nearby phones during re-pairing, or a phone may
+  auto-connect and block the Pi.
+- **Speaker dropped out of pairing mode** → it times out. Power-cycle it and
+  hold the BT button again to re-enter pairing mode.
+
+### Making reconnection survive reboots
+
+`trust` should let the Pi auto-reconnect on boot, but this isn't always
+reliable. If the speaker doesn't come back after a reboot, add a boot-time
+connect — a small systemd service or a startup-script line that runs:
+
+```bash
+bluetoothctl connect FC:58:FA:31:65:77
+```
+
+a short delay after boot (after Bluetooth and PulseAudio are up).
 
 ---
 
@@ -410,6 +540,14 @@ sudo nmcli connection delete "vacation-house"
 > NetworkManager. In that case, edit `/etc/wpa_supplicant/wpa_supplicant.conf`
 > and add a second `network={}` block.
 
+> **Tip (learned the hard way):** If the Pi is already at a location with an
+> unknown network and you can't SSH in, create a temporary WiFi network (a
+> phone hotspot or spare router) using the **exact same SSID and password** as
+> a network the Pi already knows. The Pi connects thinking it's the known
+> network, and you can then SSH in and add the real local network with `nmcli`.
+> (Pi Zero W is 2.4 GHz only — make sure the temporary network broadcasts on
+> 2.4 GHz.)
+
 ### Emergency access: USB gadget mode
 
 If the Pi is already at a new location and can't connect to any known
@@ -434,8 +572,6 @@ network, you can access it over USB:
 
 ## API Reference
 
-Same as the ESP32 version:
-
 | Endpoint | Description |
 |---|---|
 | `GET /play?url=<mp3-url>` | Start streaming |
@@ -454,11 +590,26 @@ EnebyBridge/
 │   ├── eneby-bridge.service    # systemd unit for autostart
 │   ├── requirements.txt        # Python dependencies
 │   └── README.md               # This file
-├── src/                        ← ESP32 version
+├── src/                        ← ESP32 version (paused, reference only)
 │   └── main.cpp
 ├── include/
 │   └── config.h
 ├── platformio.ini
 ├── home_assistant.yaml
-└── README.md
+├── documentation.md            # Reference: API, BT reconnection, troubleshooting
+└── README.md                   # Project overview + ESP32 notes
 ```
+
+---
+
+## ESP32 version
+
+The ESP32-WROOM implementation is **paused and kept for reference only**. It is
+documented outside this file:
+
+- [../README.md](../README.md) — architecture, hardware, setup, troubleshooting,
+  memory notes
+- [../documentation.md](../documentation.md) — full reference: audio pipeline,
+  WiFi/BT coexistence tuning, memory budget, dependency versions
+
+Use the Pi version above unless you specifically need the ESP32 build.
