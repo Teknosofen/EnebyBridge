@@ -13,6 +13,32 @@ but is limited to ~60–65% real audio due to single-radio coexistence constrain
 
 ---
 
+## Quick reference
+
+| What | Value |
+|---|---|
+| SSH login | `ssh hasseberg@eneby.local` |
+| SSH username | **`hasseberg`** (*not* `eneby`) |
+| Hostname | `eneby.local` |
+| ENEBY20 BT MAC | `FC:58:FA:31:65:77` |
+| Pi BT controller | `B8:27:EB:...` (Raspberry Pi OUI prefix) |
+| Service control | `sudo systemctl {status\|restart\|stop} eneby-bridge` |
+| Service logs | `journalctl -u eneby-bridge -f` |
+| Audio backend | PulseAudio → `bluez_sink.FC_58_FA_31_65_77.a2dp_sink` |
+| API port | 80 (`CAP_NET_BIND_SERVICE` granted by the systemd unit) |
+
+> **Username vs hostname.** `eneby` is the **hostname**, `hasseberg` is the
+> **SSH username**. Logging in as `eneby@eneby.local` fails with "Permission
+> denied" — always use `hasseberg@eneby.local`.
+
+> **Password.** Deliberately not recorded in this repository, which is public.
+> It is set once in Raspberry Pi Imager at flash time and stored nowhere on the
+> running Pi — keep it in a password manager or private note. If it is lost,
+> recover access by editing `userconf.txt` on the SD card's boot partition, or
+> re-flash. Switching to SSH-key login avoids needing it at all.
+
+---
+
 ## Architecture (Raspberry Pi)
 
 ```
@@ -66,7 +92,7 @@ but is limited to ~60–65% real audio due to single-radio coexistence constrain
 | **Volume control** | Set volume 0–100 over HTTP via PulseAudio |
 | **Status endpoint** | JSON status with playing state, URL, volume, BT sink |
 | **Home Assistant integration** | REST commands, media_player, station selector, automations |
-| **BT auto-reconnect** | BlueZ reconnects to trusted speaker on boot |
+| **BT auto-reconnect** | BlueZ reconnects to trusted speaker on boot (not always reliable — see [Bluetooth pairing and reconnection](#bluetooth-pairing-and-reconnection)) |
 | **mDNS discovery** | Accessible via `eneby.local` — works on any network |
 | **Autostart on boot** | systemd service starts automatically, no login needed |
 | **Gap-free audio** | Separate WiFi + BT radios = no coexistence issues |
@@ -86,6 +112,10 @@ but is limited to ~60–65% real audio due to single-radio coexistence constrain
 
 For step-by-step setup instructions (flashing the SD card, SSH, pairing,
 installing the service), see **[pi/README.md](pi/README.md)**.
+
+This document covers the reference material instead: API, integration,
+[Bluetooth pairing and reconnection](#bluetooth-pairing-and-reconnection),
+[network changes](#network-changes), and [troubleshooting](#troubleshooting).
 
 ---
 
@@ -277,17 +307,123 @@ After powering on the Pi, the following happens automatically:
 5. The bridge is ready to accept HTTP requests
 6. mDNS advertises `eneby.local` via avahi
 
+> **Step 3 is the unreliable one.** `trust` normally makes BlueZ reconnect on
+> boot, but in practice it sometimes doesn't. If the speaker fails to come back
+> after a reboot, add a boot-time `bluetoothctl connect FC:58:FA:31:65:77` from
+> a small systemd unit or startup script, delayed until after Bluetooth and
+> PulseAudio are up.
+
+---
+
+## Bluetooth pairing and reconnection
+
+The Bluetooth link is the single most common source of real-world failures.
+Understanding two behaviours explains almost every symptom.
+
+### The pairing key can be lost
+
+The ENEBY20 stores a pairing key per device, and it **discards the Pi's key**
+if the speaker is paired to something else in the meantime, or after long
+periods unused (e.g. seasonal use). Once the key is gone, the Pi and the
+speaker no longer trust each other even though both still list the pairing.
+
+Symptoms of a lost key:
+
+| Signal | What you see |
+|---|---|
+| `/status` | `"bt_sink": "not found"` |
+| `pactl list short sinks` | only `auto_null` — no `bluez_sink.*` |
+| ENEBY20 LED | **flashing fast** (back in pairing mode) |
+| `bluetoothctl connect` | `Failed to connect: org.bluez.Error.Failed br-connection-key-missing` |
+| Audible result | playback "succeeds" but audio goes nowhere — silence |
+
+**A plain `connect` cannot fix this.** The stale pairing must be deleted with
+`remove` and a fresh key negotiated with `pair`. The full command sequence is
+in **[pi/README.md → Reconnecting the speaker](pi/README.md)**; in short:
+`power on` → `remove <MAC>` → `agent on` → `default-agent` → `scan on` → put the
+speaker in pairing mode → `scan off` → `pair` → `trust` → `connect`.
+
+`trust` matters as much as `pair`: it is what authorises future automatic
+reconnection. Pairing without trusting produces a link that works now and
+fails after the next reboot.
+
+### The speaker accepts only one device at a time
+
+A2DP speakers are single-sink. A nearby phone that has the ENEBY20 paired can
+**silently steal it** — including mid-re-pairing, which makes `pair` or
+`connect` fail for no visible reason. Turn Bluetooth off on nearby phones when
+re-pairing, and suspect a phone first whenever the speaker is unexpectedly
+unavailable.
+
+Two related timing traps:
+
+- **`pair` reports `Device ... not available`** — the speaker hasn't been
+  rediscovered yet. `scan on`, confirm the LED is flashing fast, and wait for
+  the `[NEW] Device FC:58:FA:31:65:77 ENEBY20` line before pairing.
+- **Pairing mode times out** — the ENEBY20 leaves pairing mode on its own.
+  Power-cycle it and hold the BT button again.
+
+### Verifying a good connection
+
+```bash
+pactl list short sinks    # must list bluez_sink.FC_58_FA_31_65_77.a2dp_sink
+curl "http://eneby.local/status"                       # bt_sink must not be "not found"
+curl "http://eneby.local/play?url=https://sverigesradio.se/topsy/direkt/164-hi-mp3"
+```
+
+If the sink is missing but Bluetooth reports connected, restart PulseAudio and
+re-check: `systemctl --user restart pulseaudio`.
+
+---
+
+## Network changes
+
+The bridge is designed to move between locations. Pi OS connects to whichever
+known network is available at boot, so add networks before relocating:
+
+```bash
+sudo nmcli connection add type wifi con-name "vacation-house" \
+  ssid "OtherNetworkSSID" wifi-sec.key-mgmt wpa-psk \
+  wifi-sec.psk "OtherNetworkPassword"
+
+nmcli connection show                              # list configured networks
+sudo nmcli connection delete "vacation-house"      # remove one
+```
+
+Pre-Bookworm Pi OS uses `wpa_supplicant` instead of NetworkManager — add a
+second `network={}` block to `/etc/wpa_supplicant/wpa_supplicant.conf`.
+
+### Recovering a Pi on an unknown network
+
+If the Pi is already somewhere it can't connect and you can't SSH in, two
+approaches work:
+
+1. **Impersonate a known network** (learned the hard way) — stand up a phone
+   hotspot or spare router using the **exact same SSID and password** as a
+   network the Pi already knows. It connects believing it's the known network,
+   and you can then SSH in and add the real one with `nmcli`. The Pi Zero W is
+   **2.4 GHz only**, so the temporary network must broadcast on 2.4 GHz.
+2. **USB gadget mode** — `dtoverlay=dwc2` in `/boot/config.txt` plus
+   `modules-load=dwc2,g_ether` in `/boot/cmdline.txt`, then connect the Pi's
+   USB *data* port to a laptop and SSH over USB Ethernet. Worth enabling ahead
+   of time so it's ready when needed.
+
 ---
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `bt_sink: "not found"` in `/status` | PulseAudio can't see the BT speaker | Check `pactl list short sinks` — reconnect with `bluetoothctl connect <MAC>` |
+| `bt_sink: "not found"` in `/status`, only `auto_null` in `pactl list short sinks` | BT sink gone — usually a lost pairing key | Try `bluetoothctl connect FC:58:FA:31:65:77`; if it returns `br-connection-key-missing` you must `remove` and re-pair — see [Bluetooth pairing and reconnection](#bluetooth-pairing-and-reconnection) |
+| `connect` fails with `br-connection-key-missing` | Pairing key discarded by the speaker | Plain `connect` cannot fix this — `remove <MAC>`, then `pair` / `trust` / `connect` afresh |
+| `pair` fails with `Device ... not available` | Speaker not currently discoverable | `scan on`, put the speaker in pairing mode (LED flashing fast), wait for the `[NEW] Device` line, then `pair` |
+| Speaker unavailable / pairing keeps failing | A nearby phone has claimed it — A2DP is single-device | Turn off Bluetooth on nearby phones, then retry |
 | Service crash-loops (status=217) | Wrong paths in service file | `git pull`, re-copy service file, `systemctl daemon-reload` |
-| No sound but "playing" | Speaker disconnected during idle | `bluetoothctl connect FC:58:FA:31:65:77` |
-| BT won't connect | `rfkill` blocking Bluetooth | `sudo rfkill unblock bluetooth` |
+| No sound but "playing" | Speaker disconnected during idle | `bluetoothctl connect FC:58:FA:31:65:77` — if that fails with `br-connection-key-missing`, re-pair |
+| Doesn't reconnect after reboot | `trust` missing, or BlueZ boot reconnect unreliable | Confirm `trust <MAC>` was set; otherwise add a boot-time `connect` (see [Boot sequence](#boot-sequence)) |
+| BT won't connect | `rfkill` blocking Bluetooth | `sudo rfkill unblock bluetooth` (persist via `/etc/rc.local`) |
 | `br-connection-busy` | Service repeatedly trying to connect | `sudo systemctl stop eneby-bridge`, disconnect, reconnect, restart service |
+| SSH "Permission denied" | Wrong username | Use `hasseberg@eneby.local` — `eneby` is the hostname, not the username |
 | PulseAudio connection refused | PulseAudio not running for user | `systemctl --user start pulseaudio` and ensure `loginctl enable-linger` is set |
 | `eneby.local` not resolving | avahi not running or mDNS blocked | `sudo systemctl start avahi-daemon` — use IP address as fallback |
 | Stream won't play | URL not serving MP3 | Verify with `mpv <url>` directly on the Pi |
